@@ -1,0 +1,57 @@
+---
+- name: Deploy Wazuh Agent
+  hosts: agents
+  become: true
+  vars_files:
+    - ../inventory/group_vars/all.yml
+
+  roles:
+    - role: cleanup
+      tags: cleanup
+
+    - role: common
+      tags: common
+
+    - role: wazuh-agent
+      tags: wazuh-agent
+
+    - role: suricata
+      tags: suricata
+      
+
+- name: Deploy PME Security Automation Prototype
+  hosts: security_server
+  become: true
+  vars_files:
+    - ../inventory/group_vars/all.yml
+
+  tasks:
+    - name: Show Deployment Configuration
+      debug:
+        msg: "Deploying for {{ endpoint_count }} endpoints on {{ target_os }}"
+
+  roles:
+    - role: cleanup
+      tags: cleanup
+      
+    - role: common
+      tags: common
+
+    - role: wazuh-indexer
+      tags: wazuh-indexer
+
+    - role: wazuh-server
+      tags: wazuh-server
+
+    - role: wazuh-dashboard
+      tags: wazuh-dashboard
+
+    - role: ufw
+      tags: ufw
+
+    - role: fail2ban
+      tags: fail2ban
+
+
+      
+

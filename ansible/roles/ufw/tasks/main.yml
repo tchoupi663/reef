@@ -1,0 +1,106 @@
+---
+- name: Install UFW
+  apt:
+    name: ufw
+    state: present
+  become: true
+
+- name: Reset UFW to default policies (deny incoming, allow outgoing)
+  ufw:
+    state: reset
+    policy: deny
+    direction: incoming
+  become: true
+
+- name: Allow Outgoing
+  ufw:
+    policy: allow
+    direction: outgoing
+  become: true
+
+- name: Allow traffic on loopback interface
+  ufw:
+    rule: allow
+    direction: in
+    interface: lo
+  become: true
+
+- name: Allow traffic out on loopback interface
+  ufw:
+    rule: allow
+    direction: out
+    interface: lo
+  become: true
+  
+- name: Allow SSH from anywhere (Fallback if no IPs defined - WARNING)
+  ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+  when: allowed_ssh_ips | length == 0
+  become: true
+
+- name: Allow SSH from trusted IPs
+  ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+    src: "{{ item }}"
+  loop: "{{ allowed_ssh_ips }}"
+  when: allowed_ssh_ips | length > 0
+  become: true
+
+- name: Allow Wazuh Dashboard (HTTPS)
+  ufw:
+    rule: allow
+    port: "{{ wazuh_dashboard_port | default('443') }}"
+    proto: tcp
+  when: ufw_allow_dashboard | bool
+  become: true
+
+- name: Allow Wazuh Dashboard (Agent communication)
+  ufw:
+    rule: allow
+    port: "{{ wazuh_agent_port | default('1514') }}"
+    proto: tcp
+  when: ufw_allow_dashboard | bool
+  become: true
+
+- name: Allow Wazuh Dashboard (Agent registration)
+  ufw:
+    rule: allow
+    port: "{{ wazuh_registration_port | default('1515') }}"
+    proto: tcp
+  when: ufw_allow_dashboard | bool
+  become: true
+
+- name: Allow Wazuh Dashboard (Wazuh API)
+  ufw:
+    rule: allow
+    port: "{{ wazuh_api_port | default('55000') }}"
+    proto: tcp
+  when: ufw_allow_dashboard | bool
+  become: true
+
+- name: Allow additional TCP ports
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ ufw_additional_tcp_ports }}"
+  when: ufw_additional_tcp_ports | length > 0
+  become: true
+
+- name: Allow additional UDP ports
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: udp
+  loop: "{{ ufw_additional_udp_ports }}"
+  when: ufw_additional_udp_ports | length > 0
+  become: true
+
+- name: Enable UFW
+  ufw:
+    state: enabled
+  become: true

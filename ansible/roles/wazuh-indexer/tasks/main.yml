@@ -1,0 +1,94 @@
+---
+
+- name: Create Wazuh installation directory
+  file:
+    path: /opt/wazuh-install
+    state: directory
+    mode: '0755'
+
+- name: Download Wazuh installation script
+  get_url:
+    url: https://packages.wazuh.com/4.14/wazuh-install.sh
+    dest: /opt/wazuh-install/wazuh-install.sh
+    mode: '0755'
+
+- name: Deploy Wazuh configuration file
+  template:
+    src: config.yml.j2
+    dest: /opt/wazuh-install/config.yml
+
+- name: Generate Wazuh configuration files (on bootstrap node)
+  command: ./wazuh-install.sh --generate-config-files
+  args:
+    chdir: /opt/wazuh-install
+    creates: /opt/wazuh-install/wazuh-install-files.tar
+  when: inventory_hostname == ansible_play_hosts[0]
+
+- name: Fetch Wazuh configuration tarball
+  fetch:
+    src: /opt/wazuh-install/wazuh-install-files.tar
+    dest: /tmp/wazuh-install-files.tar
+    flat: yes
+  when: inventory_hostname == ansible_play_hosts[0]
+
+- name: Copy Wazuh configuration tarball to all nodes
+  copy:
+    src: /tmp/wazuh-install-files.tar
+    dest: /opt/wazuh-install/wazuh-install-files.tar
+  when: inventory_hostname != ansible_play_hosts[0]
+
+- name: Install Wazuh Indexer
+  block:
+    - name: Run Wazuh Indexer installation script
+      command: ./wazuh-install.sh --wazuh-indexer {{ wazuh_node_name | default('node-1') }} --overwrite
+      args:
+        chdir: /opt/wazuh-install
+        creates: /etc/wazuh-indexer/opensearch.yml
+  rescue:
+    - name: Read Wazuh installation log
+      slurp:
+        src: /var/log/wazuh-install.log
+      register: installation_log
+      ignore_errors: true
+
+    - name: Print Wazuh installation log
+      debug:
+        msg: "{{ installation_log['content'] | b64decode | split('\n') }}"
+      when: installation_log is success
+
+    - name: Fail task after printing log
+      fail:
+        msg: "Wazuh Indexer installation failed. See log output above."
+
+- name: Start Wazuh Indexer Cluster
+  command: ./wazuh-install.sh --start-cluster
+  args:
+    chdir: /opt/wazuh-install
+    creates: /opt/wazuh-install/.cluster_initialized
+  register: start_cluster_result
+  run_once: true
+
+- name: Create cluster initialized marker
+  file:
+    path: /opt/wazuh-install/.cluster_initialized
+    state: touch
+  when: start_cluster_result.changed
+
+- name: Extract Wazuh admin password
+  shell: tar -O -xf /opt/wazuh-install/wazuh-install-files.tar wazuh-install-files/wazuh-passwords.txt | grep -A 1 "admin"
+  register: wazuh_password
+  run_once: true
+  changed_when: false
+
+- name: Show Wazuh admin password
+  debug:
+    msg: "{{ wazuh_password.stdout_lines }}"
+  run_once: true
+
+- name: Save Wazuh admin password to local file
+  copy:
+    content: "{{ wazuh_password.stdout }}"
+    dest: "{{ lookup('env', 'HOME') }}/Downloads/wazuh-admin-password.txt"
+  delegate_to: localhost
+  run_once: true
+  become: false

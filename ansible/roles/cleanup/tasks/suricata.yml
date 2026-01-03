@@ -1,0 +1,51 @@
+---
+- name: Remove any Suricata PPA files (wildcard cleanup)
+  shell: rm -f /etc/apt/sources.list.d/*suricata*
+
+
+- name: Stop and disable Suricata service
+  service:
+    name: suricata
+    state: stopped
+    enabled: no
+  ignore_errors: yes
+
+- name: Remove Suricata package
+  apt:
+    name: suricata
+    state: absent
+    purge: yes
+
+- name: Remove Suricata configuration directory
+  file:
+    path: /etc/suricata
+    state: absent
+
+- name: Remove Emerging Threats rules archive
+  file:
+    path: /tmp/emerging.rules.tar.gz
+    state: absent
+
+- name: Check if ossec.conf exists
+  stat:
+    path: /var/ossec/etc/ossec.conf
+  register: ossec_conf
+
+- name: Remove Suricata Wazuh configuration block
+  blockinfile:
+    path: /var/ossec/etc/ossec.conf
+    marker: "<!-- {mark} ANSIBLE MANAGED BLOCK SURICATA -->"
+    state: absent
+  register: suricata_wazuh_config
+  when: ossec_conf.stat.exists
+
+- name: Remove Suricata repository
+  apt_repository:
+    repo: ppa:oisf/suricata-stable
+    state: absent
+
+- name: Restart Wazuh Agent
+  service:
+    name: wazuh-agent
+    state: restarted
+  when: suricata_wazuh_config.changed

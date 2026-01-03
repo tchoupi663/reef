@@ -1,0 +1,140 @@
+---
+- name: Remove all registered agents from the Manager
+  shell: |
+    if [ ! -f /var/ossec/bin/manage_agents ]; then
+      echo "manage_agents binary not found, skipping agent removal."
+      exit 0
+    fi
+
+    echo "Listing agents before removal:"
+    /var/ossec/bin/manage_agents -l
+
+    for id in $(/var/ossec/bin/manage_agents -l | awk '/ID:/ {print $2}' | tr -d ',' | grep -v "^000$"); do
+      echo "Removing agent ID: $id"
+      /var/ossec/bin/manage_agents -r "$id"
+    done
+
+    echo "Listing agents after removal:"
+    /var/ossec/bin/manage_agents -l
+  args:
+    executable: /bin/bash
+  when: "'security_server' in group_names"
+  ignore_errors: yes
+  tags: cleanup_agents
+  register: manage_agents_output
+
+- name: Include Suricata cleanup tasks
+  include_tasks: suricata.yml
+  when: "'agents' in group_names"
+  tags: cleanup_suricata
+
+- name: Print agent removal output
+  debug:
+    var: manage_agents_output.stdout_lines
+  when: manage_agents_output is defined
+
+# sudo /var/ossec/bin/manage_agents -r 001
+# sudo /var/ossec/bin/agent-auth -m 192.168.64.12
+# sudo systemctl restart wazuh-agent
+
+- name: Download Wazuh installation assistant for uninstallation
+  get_url:
+    url: https://packages.wazuh.com/4.14/wazuh-install.sh
+    dest: /tmp/wazuh-install.sh
+    mode: '0755'
+  when: "'security_server' in group_names"
+
+- name: Run Wazuh uninstallation script
+  command: bash /tmp/wazuh-install.sh --uninstall
+  when: "'security_server' in group_names"
+  ignore_errors: yes
+
+- name: Stop Wazuh services
+  service:
+    name: "{{ item }}"
+    state: stopped
+  loop:
+    - wazuh-indexer
+    - wazuh-manager
+    - wazuh-dashboard
+    - filebeat
+    - wazuh-agent
+  ignore_errors: yes
+
+- name: Disable Wazuh agent service
+  systemd:
+    name: wazuh-agent
+    enabled: no
+    daemon_reload: yes
+  ignore_errors: yes
+
+- name: Remove Wazuh packages
+  apt:
+    name:
+      - wazuh-indexer
+      - wazuh-manager
+      - filebeat
+      - wazuh-dashboard
+      - wazuh-agent
+    state: absent
+    purge: yes
+
+- name: Remove Wazuh systemd service files
+  file:
+    path: "/usr/lib/systemd/system/{{ item }}.service"
+    state: absent
+  loop:
+    - wazuh-indexer
+    - wazuh-manager
+    - wazuh-dashboard
+    - filebeat
+    - wazuh-agent
+
+- name: Reload systemd to clear deleted units
+  systemd:
+    daemon_reload: yes
+
+- name: Reset failed systemd states
+  command: systemctl reset-failed
+
+- name: Remove Wazuh data and configuration directories
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /var/lib/wazuh-indexer
+    - /etc/wazuh-indexer
+    - /var/log/wazuh-indexer
+    - /usr/share/wazuh-indexer
+    - /opt/wazuh-install
+    - /var/ossec
+    - /etc/filebeat
+    - /var/lib/filebeat
+    - /var/lib/wazuh-dashboard
+    - /etc/wazuh-dashboard
+    - /var/log/wazuh-dashboard
+    - /usr/share/wazuh-dashboard
+    - /etc/apt/sources.list.d/wazuh.list
+    - /usr/share/keyrings/wazuh.gpg
+
+- name: Remove temporary installation files
+  file:
+    path: /tmp/wazuh-install-files.tar
+    state: absent
+
+# - name: Remove common dependencies (experimental cleanup)
+#   apt:
+#     name:
+#       - curl
+#       - gpg
+#       - unzip
+#       - apt-transport-https
+#       - python3-apt
+#       - python3-requests
+#     state: absent
+#     purge: yes
+
+# - name: Autoremove unused dependencies
+#   apt:
+#     autoremove: yes
+#     autoclean: yes

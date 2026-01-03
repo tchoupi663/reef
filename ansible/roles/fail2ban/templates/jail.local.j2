@@ -1,0 +1,17 @@
+[DEFAULT]
+bantime = {{ fail2ban_bantime }}
+findtime = {{ fail2ban_findtime }}
+maxretry = {{ fail2ban_maxretry }}
+destemail = {{ fail2ban_destemail }}
+sender = {{ fail2ban_sender }}
+ignoreip = {{ fail2ban_ignoreips | join(' ') }}
+mta = sendmail
+protocol = tcp
+chain = INPUT
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+backend = systemd

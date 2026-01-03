@@ -1,0 +1,25 @@
+nodes:
+  # Wazuh indexer nodes
+  indexer:
+{% for node in wazuh_indexer_nodes | default([{'name': 'node-1', 'ip': ansible_host }]) %}
+    - name: {{ node.name }}
+      ip: "{{ node.ip }}"
+{% endfor %}
+
+  # Wazuh server nodes
+  server:
+{% set manager_nodes = wazuh_manager_nodes | default([{'name': 'wazuh-1', 'ip': ansible_host }]) %}
+{% for node in manager_nodes %}
+    - name: {{ node.name }}
+      ip: "{{ node.ip }}"
+{% if manager_nodes | length > 1 %}
+      node_type: {{ node.node_type | default('master') }}
+{% endif %}
+{% endfor %}
+
+  # Wazuh dashboard nodes
+  dashboard:
+{% for node in wazuh_dashboard_nodes | default([{'name': 'dashboard', 'ip': ansible_host }]) %}
+    - name: {{ node.name }}
+      ip: "{{ node.ip }}"
+{% endfor %}

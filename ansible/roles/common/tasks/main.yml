@@ -1,0 +1,31 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  become: true
+
+- name: Install minimal dependencies
+  apt:
+    name:
+      - curl
+      - gnupg
+      - unzip
+      - apt-transport-https
+      - python3-apt
+      - python3-requests
+    state: present
+  become: true
+
+- name: Hardening - Ensure permissions on critical files
+  file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - /etc/passwd
+    - /etc/group
+    - /etc/shadow
+  ignore_errors: yes # Don't fail if permissions are slightly different but safe
+  become: true
