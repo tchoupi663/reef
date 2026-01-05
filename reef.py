@@ -273,11 +273,33 @@ def update_yaml_config_from_schema(config_data):
         console.print(f"[bold red]Failed to update YAML config:[/bold red] {e}")
         return False
 
-def update_ini_inventory(manager_ip, manager_user, agents_data):
+def update_ini_inventory(manager_ip, manager_user, manager_password, agents_data):
     """Update ansible/inventory/hosts.ini using regex to preserve structure."""
     if not HOSTS_INI_FILE.exists():
-        console.print(f"[bold red]Error:[/bold red] {HOSTS_INI_FILE} not found!")
-        return False
+        try:
+            HOSTS_INI_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(HOSTS_INI_FILE, 'w') as f:
+                f.write("[security_server]\n")
+                if manager_ip:
+                     entry = f"{manager_ip} ansible_user={manager_user or 'root'}"
+                     if manager_password:
+                         entry += f" ansible_password={manager_password} ansible_become_password={manager_password}"
+                     f.write(f"{entry}\n")
+                
+                f.write("\n[agents]\n")
+                for agent in agents_data:
+                    entry = f"{agent['ip']}"
+                    if agent['user']:
+                        entry += f" ansible_user={agent['user']}"
+                    if agent['password']:
+                        entry += f" ansible_password={agent['password']} ansible_become_password={agent['password']}"
+                    f.write(f"{entry}\n")
+            
+            console.print(f"[green]Created {HOSTS_INI_FILE}[/green]")
+            return True
+        except Exception as e:
+            console.print(f"[bold red]Failed to create INI inventory:[/bold red] {e}")
+            return False
 
     try:
         with open(HOSTS_INI_FILE, 'r') as f:
@@ -311,6 +333,8 @@ def update_ini_inventory(manager_ip, manager_user, agents_data):
                         entry = f"{agent['ip']}"
                         if agent['user']:
                             entry += f" ansible_user={agent['user']}"
+                        if agent['password']:
+                            entry += f" ansible_password={agent['password']} ansible_become_password={agent['password']}"
                         new_lines.append(f"{entry}\n")
                     
                     # Skip the line that was the header (we just wrote it)
@@ -328,6 +352,19 @@ def update_ini_inventory(manager_ip, manager_user, agents_data):
                 rest = match.group(2)
                 if manager_user:
                     rest = re.sub(r'ansible_user=\S+', f'ansible_user={manager_user}', rest)
+                if manager_password:
+                    # Update password
+                    if 'ansible_password=' in rest:
+                        rest = re.sub(r'ansible_password=\S+', f'ansible_password={manager_password}', rest)
+                    else:
+                        rest += f" ansible_password={manager_password}"
+                    
+                    # Update become password
+                    if 'ansible_become_password=' in rest:
+                         rest = re.sub(r'ansible_become_password=\S+', f'ansible_become_password={manager_password}', rest)
+                    else:
+                        rest += f" ansible_become_password={manager_password}"
+
                 new_lines.append(f"{manager_ip}{rest}\n")
             else:
                 new_lines.append(line)
@@ -341,6 +378,8 @@ def update_ini_inventory(manager_ip, manager_user, agents_data):
                 entry = f"{agent['ip']}"
                 if agent['user']:
                     entry += f" ansible_user={agent['user']}"
+                if agent['password']:
+                    entry += f" ansible_password={agent['password']} ansible_become_password={agent['password']}"
                 new_lines.append(f"{entry}\n")
 
         with open(HOSTS_INI_FILE, 'w') as f:
@@ -685,6 +724,7 @@ def configure_interactive():
     
     # Still need manager user for hosts.ini update 
     manager_user = Prompt.ask("Wazuh Manager SSH User (for inventory)", default="root")
+    manager_password = Prompt.ask("Wazuh Manager SSH Password", password=True)
     manager_ip = new_config.get('wazuh_manager_ip')
 
     agents_data = []
@@ -695,16 +735,26 @@ def configure_interactive():
             console.print(f"  [cyan]Agent {i}[/cyan]")
             ip = Prompt.ask(f"    IP")
             user = Prompt.ask(f"    SSH User", default=last_user)
+            password = Prompt.ask(f"    SSH Password", password=True)
             last_user = user
-            agents_data.append({'ip': ip, 'user': user})
+            agents_data.append({'ip': ip, 'user': user, 'password': password})
 
     if Confirm.ask("Save these settings?"):
+        # Ensure enabled_roles has a default if missing from current config
+        if 'enabled_roles' not in current_config:
+             roles_dir = ANSIBLE_DIR / "roles"
+             if roles_dir.exists():
+                 default_roles = sorted([d.name for d in roles_dir.iterdir() if d.is_dir()])
+             else:
+                 default_roles = ['common', 'ufw', 'fail2ban', 'wazuh-agent', 'wazuh-server', 'wazuh-indexer', 'wazuh-dashboard', 'suricata', 'cleanup']
+             new_config['enabled_roles'] = default_roles
+
         # Update group_vars/all.yml
         update_yaml_config_from_schema(new_config)
         
         # Update hosts.ini
         if manager_ip:
-            update_ini_inventory(manager_ip, manager_user, agents_data)
+            update_ini_inventory(manager_ip, manager_user, manager_password, agents_data)
         
         Prompt.ask("Configuration updated. Press Enter to continue...")
 
@@ -757,6 +807,28 @@ def deploy():
     playbook = ANSIBLE_DIR / "playbooks" / "experimental.yml"
     inventory = HOSTS_INI_FILE
     
+    if not GROUP_VARS_FILE.exists() or not HOSTS_INI_FILE.exists():
+        console.print("[yellow]Configuration and hosts inventory not found. Launching configuration wizard...[/yellow]")
+        configure_interactive()
+        
+        # If user cancelled configuration (Ctrl+C or didn't save), we might still not have a file.
+        if not GROUP_VARS_FILE.exists() or not HOSTS_INI_FILE.exists():
+             console.print("[red]Configuration aborted. Deployment cannot proceed without configuration.[/red]")
+             return
+
+    # Check for enabled_roles before deploying
+    current_config = load_current_config()
+    if 'enabled_roles' not in current_config:
+        console.print("[yellow]Warning: 'enabled_roles' not found in configuration. Initializing with ALL roles.[/yellow]")
+        roles_dir = ANSIBLE_DIR / "roles"
+        if roles_dir.exists():
+            default_roles = sorted([d.name for d in roles_dir.iterdir() if d.is_dir()])
+        else:
+             default_roles = ['common', 'ufw', 'fail2ban', 'wazuh-agent', 'wazuh-server', 'wazuh-indexer', 'wazuh-dashboard', 'suricata', 'cleanup']
+        
+        current_config['enabled_roles'] = default_roles
+        update_yaml_config_from_schema(current_config)
+
     if Confirm.ask(f"Ready to deploy? The action is irreversible", default=True):
         cmd = f"ansible-playbook {playbook} -i {inventory}"
         # Use progress bar unless verbose. Estimate ~110 tasks based on full playbook.
