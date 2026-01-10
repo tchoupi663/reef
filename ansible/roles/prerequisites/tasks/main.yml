@@ -1,0 +1,69 @@
+---
+- name: Check OS compatibility
+  block:
+    - name: Verify OS is supported
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution in ['Debian', 'Ubuntu']
+        fail_msg: "OS must be Debian or Ubuntu. Found: {{ ansible_distribution }}"
+
+    - name: Check for Supported versions (Strict)
+      ansible.builtin.assert:
+        that:
+          - >-
+            (ansible_distribution == 'Debian' and ansible_distribution_major_version == '12') or
+            (ansible_distribution == 'Ubuntu' and ansible_distribution_major_version in ['22', '24']) or
+            (ansible_distribution == 'Debian' and ansible_distribution_major_version == '11')
+        fail_msg: "OS version not supported. Requires Debian 12, Ubuntu 22/24, or Debian 11 (Warning). Found: {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
+
+    - name: Warn for Debian 11
+      ansible.builtin.debug:
+        msg: "[WARN] OS is Debian 11. Proceed with caution."
+      when: ansible_distribution == 'Debian' and ansible_distribution_major_version == '11'
+
+    - name: Confirm Supported OS
+      ansible.builtin.debug:
+        msg: "[OK] OS is {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
+      when: >
+        (ansible_distribution == 'Debian' and ansible_distribution_major_version == '12') or
+        (ansible_distribution == 'Ubuntu' and ansible_distribution_major_version in ['22', '24'])
+
+- name: Check RAM requirements
+  block:
+    - name: Check minimum RAM (1.8GB)
+      ansible.builtin.assert:
+        that:
+          - ansible_memtotal_mb >= 1800
+        fail_msg: "Memory: {{ ansible_memtotal_mb }}MB (< 1.8GB). Wazuh will not run."
+
+    - name: Check recommended RAM (4GB)
+      ansible.builtin.debug:
+        msg: "[WARN] Memory: {{ ansible_memtotal_mb }}MB (< 4GB). Wazuh might be slow."
+      when: ansible_memtotal_mb >= 1800 and ansible_memtotal_mb < 4000
+
+    - name: Confirm RAM
+      ansible.builtin.debug:
+        msg: "[OK] Memory: {{ ansible_memtotal_mb }}MB (>= 4GB)"
+      when: ansible_memtotal_mb >= 4000
+
+- name: Check Disk Space on /
+  block:
+    - name: Get Disk Space info
+      ansible.builtin.set_fact:
+        root_disk: "{{ ansible_mounts | selectattr('mount', 'equalto', '/') | list | first }}"
+
+    - name: Display Free Disk Space
+      ansible.builtin.debug:
+        msg: "[INFO] Free Disk Space on /: {{ (root_disk.size_available / 1024 / 1024 / 1024) | round(2) }} GB"
+
+- name: Check Root privileges
+  block:
+    - name: Verify running as root
+      ansible.builtin.debug:
+        msg: "[WARN] Script not running as root. Ansible requires sudo/root."
+      when: ansible_user_uid != 0
+
+    - name: Confirm Root
+      ansible.builtin.debug:
+        msg: "[OK] Running as root"
+      when: ansible_user_uid == 0

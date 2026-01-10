@@ -9,8 +9,16 @@ import time
 
 # Import shared logic from reef.py
 # We need to make sure the current directory is in path to import reef
-sys.path.append(str(Path(__file__).parent.resolve()))
-from reef import SchemaManager, update_yaml_config_from_schema, update_ini_inventory, load_current_config, BASE_DIR, ANSIBLE_DIR, GROUP_VARS_FILE, HOSTS_INI_FILE, SCRIPTS_DIR
+current_dir = str(Path(__file__).parent.resolve())
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+try:
+    from reef import SchemaManager, update_yaml_config_from_schema, update_ini_inventory, load_current_config, BASE_DIR, ANSIBLE_DIR, GROUP_VARS_FILE, HOSTS_INI_FILE, SCRIPTS_DIR
+except ImportError:
+    # Fallback or retry if streamlit messed up imports
+    import reef
+    from reef import SchemaManager, update_yaml_config_from_schema, update_ini_inventory, load_current_config, BASE_DIR, ANSIBLE_DIR, GROUP_VARS_FILE, HOSTS_INI_FILE, SCRIPTS_DIR
 
 # --- setup & config ---
 st.set_page_config(
@@ -21,78 +29,229 @@ st.set_page_config(
 )
 
 # Custom CSS for "Pretty" UI
+# Custom CSS for "Pretty" UI
 st.markdown("""
 <style>
-    .main .block-container {
-        padding-top: 2rem;
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Outfit', sans-serif;
     }
-    .stButton>button {
-        width: 100%;
-        border-radius: 8px;
-        height: 3em; 
+
+    /* Dark Theme Background & Text */
+    .stApp {
+        background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+        color: #e2e8f0;
     }
-    .stSuccess {
-        background-color: #d1e7dd;
-        color: #0f5132;
+    
+    /* Headers */
+    h1, h2, h3 {
+        color: #f8fafc !important;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    /* Cards / Containers */
+    .css-card {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        padding: 2rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .css-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+        border-color: rgba(99, 102, 241, 0.4);
+    }
+    
+    /* Metrics */
+    [data-testid="stMetric"] {
+        background: rgba(255, 255, 255, 0.03);
         padding: 1rem;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    [data-testid="stMetricLabel"] {
+        color: #94a3b8;
+    }
+    [data-testid="stMetricValue"] {
+        color: #38bdf8;
+        font-weight: 700;
+    }
+
+    /* Buttons (General/Secondary) */
+    .stButton>button {
+        background: rgba(255, 255, 255, 0.05);
+        color: #e2e8f0;
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 8px;
+        height: 3em;
+        font-weight: 500;
+        transition: all 0.2s ease;
+    }
+    .stButton>button:hover {
+        background: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.2);
+        color: white;
+    }
+
+    /* Primary Button (Active Navigation / Actions) */
+    .stButton>button[kind="primary"] {
+        background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%);
+        color: white;
+        border: none;
+        font-weight: 600;
+        box-shadow: 0 4px 14px 0 rgba(0,118,255,0.39);
+    }
+    .stButton>button[kind="primary"]:hover {
+        transform: scale(1.02);
+        box-shadow: 0 6px 20px rgba(0,118,255,0.23);
+        border: none;
+    }
+    
+    /* Inputs */
+    .stTextInput>div>div>input {
+        background-color: rgba(15, 23, 42, 0.6);
+        color: white;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+    }
+    .stTextInput>div>div>input:focus {
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 1px #38bdf8;
+    }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: rgba(15, 23, 42, 0.95);
+        border-right: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    /* Success/Error/Info Messages overhaul */
+    .stSuccess, .stInfo, .stWarning, .stError {
+        background: rgba(16, 185, 129, 0.1) !important;
+        border: 1px solid rgba(16, 185, 129, 0.2) !important;
+        color: #34d399 !important;
+        border-radius: 12px;
     }
     .stError {
-        background-color: #f8d7da;
-        color: #842029;
-        padding: 1rem;
-        border-radius: 8px;
+        background: rgba(239, 68, 68, 0.1) !important;
+        border-color: rgba(239, 68, 68, 0.2) !important;
+        color: #f87171 !important;
     }
-    h1 {
-        color: #0d6efd;
+    .stWarning {
+         background: rgba(245, 158, 11, 0.1) !important;
+         border-color: rgba(245, 158, 11, 0.2) !important;
+         color: #fbbf24 !important;
     }
+    .stInfo {
+        background: rgba(59, 130, 246, 0.1) !important;
+        border-color: rgba(59, 130, 246, 0.2) !important;
+        color: #60a5fa !important;
+    }
+    
+    /* Header Tweaks */
+    [data-testid="stHeader"] {
+        background: transparent !important;
+    }
+    
+    /* Remove the "Deploy" button specifically */
+    .stDeployButton {
+        display: none !important;
+    }
+    
+    /* Hide the hamburger menu (Main Menu) */
+    #MainMenu {
+        visibility: hidden;
+    }
+    
+    /* Hide the footer */
+    footer {
+        visibility: hidden;
+    }
+    
 </style>
 """, unsafe_allow_html=True)
 
 def main():
-    st.sidebar.title("🌊 REEF Manager")
-    
-    menu_options = [
-        "Dashboard",
-        "Configuration", 
-        "Prerequisites Check", 
-        "Deploy & Manage",
-        "Documentation"
-    ]
-    
-    selection = st.sidebar.radio("Navigation", menu_options)
-    
-    st.sidebar.markdown("---")
-    status_color = "green" if GROUP_VARS_FILE.exists() else "red"
-    st.sidebar.markdown(f"**Status**: :{status_color}[{'Ready' if GROUP_VARS_FILE.exists() else 'Not Configured'}]")
+    if 'page' not in st.session_state:
+        st.session_state.page = "Dashboard"
+        
+    with st.sidebar:
+        st.title("🌊 REEF")
+        st.markdown('<p style="color: #94a3b8; margin-top: -20px; font-size: 0.9em;">Security Automation</p>', unsafe_allow_html=True)
+        st.markdown("---")
+        
+        # Navigation Buttons
+        nav_options = [
+            ("Dashboard", "📊"),
+            ("Configuration", "⚙️"),
+            ("Prerequisites Check", "✅"),
+            ("Deploy & Manage", "🚀"),
+            ("Documentation", "📚")
+        ]
+        
+        for page_name, icon in nav_options:
+            # Highlight active page button using type="primary" for the active one
+            is_active = (st.session_state.page == page_name)
+            btn_type = "primary" if is_active else "secondary"
+            
+            if st.button(f"{icon}  {page_name}", key=f"nav_{page_name}", use_container_width=True, type=btn_type):
+                st.session_state.page = page_name
+                st.rerun()
 
-    if selection == "Dashboard":
+        st.markdown("---")
+        status_color = "#34d399" if GROUP_VARS_FILE.exists() else "#f87171"
+        status_text = "Ready" if GROUP_VARS_FILE.exists() else "Not Configured"
+        st.markdown(f"""
+        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); text-align: center;">
+            <div style="color: #94a3b8; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px;">System Status</div>
+            <div style="color: {status_color}; font-weight: bold; margin-top: 4px;">● {status_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Main Content Router
+    page = st.session_state.page
+    
+    if page == "Dashboard":
         render_dashboard()
-    elif selection == "Configuration":
+    elif page == "Configuration":
         render_configuration()
-    elif selection == "Prerequisites Check":
+    elif page == "Prerequisites Check":
         render_prerequisites()
-    elif selection == "Deploy & Manage":
+    elif page == "Deploy & Manage":
         render_deploy()
-    elif selection == "Documentation":
+    elif page == "Documentation":
         render_docs()
 
 def render_dashboard():
-    st.title("Welcome to REEF")
-    st.markdown("### PME Security Automation Manager")
+    st.markdown("<h1>Welcome to <span style='background: linear-gradient(90deg, #4f46e5, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>REEF</span></h1>", unsafe_allow_html=True)
+    st.markdown("### Security Infrastructure Manager")
     
-    col1, col2 = st.columns(2)
+    st.markdown("---")
+    
+    col1, col2 = st.columns([1.5, 1])
     
     with col1:
-        st.info("""
-        **What is this?**
-        
-        REEF is a tool to automate the deployment of:
-        - Wazuh Security Platform (SIEM)
-        - Suricata (IDS)
-        - Fail2Ban
-        - UFW Firewall 
-        """)
+        st.markdown("""
+        <div class="css-card">
+            <h3>Automate Your Security Stack</h3>
+            <p style="color: #94a3b8; font-size: 1.1em; line-height: 1.6;">
+                REEF simplifies the deployment of enterprise-grade security tools. 
+                Deploy Wazuh, Suricata, and network defenses with a single click.
+            </p>
+            <br>
+            <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                <span style="background: rgba(56, 189, 248, 0.1); color: #38bdf8; padding: 4px 12px; border-radius: 99px; font-size: 0.9em; border: 1px solid rgba(56, 189, 248, 0.2);">SIEM / Wazuh</span>
+                <span style="background: rgba(168, 85, 247, 0.1); color: #a855f7; padding: 4px 12px; border-radius: 99px; font-size: 0.9em; border: 1px solid rgba(168, 85, 247, 0.2);">IDS / Suricata</span>
+                <span style="background: rgba(16, 185, 129, 0.1); color: #34d399; padding: 4px 12px; border-radius: 99px; font-size: 0.9em; border: 1px solid rgba(16, 185, 129, 0.2);">Firewall / UFW</span>
+                <span style="background: rgba(16, 185, 129, 0.1); color: #34d399; padding: 4px 12px; border-radius: 99px; font-size: 0.9em; border: 1px solid rgba(16, 185, 129, 0.2);">IPS /Fail2Ban</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
         if GROUP_VARS_FILE.exists():
@@ -100,12 +259,52 @@ def render_dashboard():
             manager_ip = config.get('wazuh_manager_ip', 'Unknown')
             endpoint_count = config.get('endpoint_count', 0)
             
-            st.metric("Manager IP", manager_ip)
-            st.metric("Configured Agents", endpoint_count)
+            st.markdown(f"""
+            <div class="css-card">
+                <h4 style="margin-top:0; color: #94a3b8;">Infrastructure Overview</h4>
+                <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 8px;">
+                        <span style="color: #cbd5e1;">Manager IP</span>
+                        <span style="font-family: monospace; color: #38bdf8;">{manager_ip}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: #cbd5e1;">Configured Agents</span>
+                        <span style="color: #34d399; font-weight: bold;">{endpoint_count}</span>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
             st.warning("⚠️ Configuration missing. Please go to the Configuration tab.")
 
-    st.image("https://images.unsplash.com/photo-1550751827-4bd374c3f58b?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80", caption="Cybersecurity Dashboard", use_container_width=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Feature Cards
+    c1, c2, c3 = st.columns(3)
+    with c1:
+         st.markdown("""
+        <div class="css-card" style="text-align: center; padding: 1.5rem;">
+            <div style="font-size: 2em; margin-bottom: 10px;">⚙️</div>
+            <h4 style="color: white; margin:0;">Configure</h4>
+            <p style="color: #64748b; font-size: 0.9em;">Define variables and inventory</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with c2:
+         st.markdown("""
+        <div class="css-card" style="text-align: center; padding: 1.5rem;">
+            <div style="font-size: 2em; margin-bottom: 10px;">✅</div>
+            <h4 style="color: white; margin:0;">Verify</h4>
+            <p style="color: #64748b; font-size: 0.9em;">Check prerequisites instantly</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with c3:
+         st.markdown("""
+        <div class="css-card" style="text-align: center; padding: 1.5rem;">
+            <div style="font-size: 2em; margin-bottom: 10px;">🚀</div>
+            <h4 style="color: white; margin:0;">Deploy</h4>
+            <p style="color: #64748b; font-size: 0.9em;">Launch playbook with one click</p>
+        </div>
+        """, unsafe_allow_html=True)
 
 def render_configuration():
     st.title("Configuration")
@@ -181,11 +380,51 @@ def render_configuration():
                     time.sleep(1)
                     st.rerun()
 
-    # Dynamic Agent Input (Outside Main Config Form to allow dynamic rendering based on saved count)
+    # Dynamic Agent Input
     if GROUP_VARS_FILE.exists():
         current_config = load_current_config() # Reload fresh
         count = current_config.get('endpoint_count', 0)
         
+        # Helper to parse current inventory
+        existing_agents = []
+        existing_mgr_user = "root"
+        existing_mgr_pass = ""
+        
+        if HOSTS_INI_FILE.exists():
+            # Standard ConfigParser fails on Ansible inventories because they interpret lines starting with IP 
+            # as keys without values, or have duplicate keys if multiple hosts define same vars inline in a way Python doesn't like.
+            # We skip the strict parser and use the manual text parser below.
+            pass 
+        
+        # Simple manual parser for Ansible INI since ConfigParser is strict
+        if HOSTS_INI_FILE.exists():
+            content = HOSTS_INI_FILE.read_text()
+            lines = content.splitlines()
+            in_agents = False
+            for line in lines:
+                line = line.strip()
+                if line == "[wazuh_agents]":
+                    in_agents = True
+                    continue
+                if line.startswith("[") and line != "[wazuh_agents]":
+                    in_agents = False
+                
+                if in_agents and line and not line.startswith("#"):
+                    parts = line.split()
+                    ip = parts[0]
+                    user = "root"
+                    pw = ""
+                    for p in parts[1:]:
+                        if p.startswith("ansible_user="):
+                            user = p.split("=")[1]
+                        if p.startswith("ansible_ssh_pass="):
+                            pw = p.split("=")[1]
+                    existing_agents.append({'ip': ip, 'user': user, 'password': pw})
+
+                # Manager check
+                if "ansible_user=" in line and "wazuh_manager" in content: # Lazy check, ideally parse manager section
+                     pass
+
         if count > 0:
             st.markdown("### Agent Details")
             with st.form("agents_form"):
@@ -193,15 +432,46 @@ def render_configuration():
                 
                 for i in range(count):
                     st.markdown(f"**Agent {i+1}**")
+                    
+                    # Defaults
+                    def_ip = existing_agents[i]['ip'] if i < len(existing_agents) else ""
+                    def_user = existing_agents[i]['user'] if i < len(existing_agents) else "root"
+                    def_pw = existing_agents[i]['password'] if i < len(existing_agents) else ""
+                    
                     c1, c2, c3 = st.columns(3)
-                    ip = c1.text_input(f"IP Address ##{i}", key=f"agent_ip_{i}")
-                    user = c2.text_input(f"SSH User ##{i}", value="root", key=f"agent_user_{i}")
-                    pw = c3.text_input(f"SSH Password ##{i}", type="password", key=f"agent_pw_{i}")
+                    ip = c1.text_input(f"IP Address ##{i}", value=def_ip, key=f"agent_ip_{i}")
+                    user = c2.text_input(f"SSH User ##{i}", value=def_user, key=f"agent_user_{i}")
+                    pw = c3.text_input(f"SSH Password ##{i}", value=def_pw, type="password", key=f"agent_pw_{i}")
                     agents_data.append({'ip': ip, 'user': user, 'password': pw})
                 
                 st.markdown("---")
-                mgr_user = st.text_input("Manager SSH User", value="root")
-                mgr_pass = st.text_input("Manager SSH Password", type="password")
+                # Try to find manager user/pass (simplified)
+                # Typically stored in [wazuh_manager] or [all:vars]
+                # For now default to root/empty or what was there if we could parse it fully.
+                # Let's simple-parse manager section too.
+                ex_mgr_user = "root"
+                ex_mgr_pw = ""
+                if HOSTS_INI_FILE.exists():
+                     content = HOSTS_INI_FILE.read_text()
+                     lines = content.splitlines()
+                     in_mgr = False
+                     for line in lines:
+                         if line.strip() == "[wazuh_manager]":
+                             in_mgr = True
+                             continue
+                         if line.startswith("[") and line.strip() != "[wazuh_manager]":
+                             in_mgr = False
+                         
+                         if in_mgr and line.strip() and not line.startswith("#"):
+                             parts = line.split()
+                             for p in parts:
+                                 if p.startswith("ansible_user="):
+                                     ex_mgr_user = p.split("=")[1]
+                                 if p.startswith("ansible_ssh_pass="):
+                                     ex_mgr_pw = p.split("=")[1]
+                
+                mgr_user = st.text_input("Manager SSH User", value=ex_mgr_user)
+                mgr_pass = st.text_input("Manager SSH Password", value=ex_mgr_pw, type="password")
                 
                 if st.form_submit_button("Update Inventory (hosts.ini)"):
                     mgr_ip = current_config.get('wazuh_manager_ip')
@@ -211,30 +481,32 @@ def render_configuration():
 def render_prerequisites():
     st.title("Prerequisites Check")
     
-    mode = st.radio("Check Mode", ["Check Local Machine", "Check Remote Target"])
-    
-    target_ip = None
-    target_user = "root"
-    
-    if mode == "Check Remote Target":
-        c1, c2 = st.columns(2)
-        target_ip = c1.text_input("Remote IP")
-        target_user = c2.text_input("Remote User", value="root")
+    st.markdown("Run system checks using the `prerequisites` Ansible role.")
+
+    # Options: Local or Inventory
+    mode = st.radio("Target", ["Local Machine", "Inventory Hosts"])
     
     if st.button("Run Check"):
-        st.info("Running check... Output will stream below.")
-        with st.container():
-            script_path = SCRIPTS_DIR / "prerequisites-check.sh"
-            
-            cmd = f"bash {script_path}"
-            if target_ip:
-                ssh_opts = "-o ControlMaster=auto -o ControlPersist=60s -o ControlPath=/tmp/reef-ssh-%r@%h:%p"
-                remote_path = "/tmp/check.sh"
-                scp_cmd = f"scp {ssh_opts} {script_path} {target_user}@{target_ip}:{remote_path}"
-                run_shell_stream(scp_cmd)
-                cmd = f"ssh {ssh_opts} -t {target_user}@{target_ip} 'sudo bash {remote_path}; sudo rm {remote_path}'"
+        st.info(f"Running checks on {mode}... Output will stream below.")
+        
+        playbook = ANSIBLE_DIR / "playbooks" / "prerequisites.yml"
+        
+        # Ensure we use our ansible.cfg
+        env = os.environ.copy()
+        env["ANSIBLE_CONFIG"] = str(ANSIBLE_DIR / "ansible.cfg")
+        
+        if mode == "Local Machine":
+            # Run against localhost
+            cmd = f"ansible-playbook {playbook} --connection=local -i localhost,"
+        else:
+            # Run against inventory
+            if not HOSTS_INI_FILE.exists():
+                st.error(f"Inventory file not found at {HOSTS_INI_FILE}. Please configure agents first.")
+                return
+            cmd = f"ansible-playbook {playbook} -i {HOSTS_INI_FILE}"
 
-            run_shell_stream(cmd)
+        st.code(cmd, language="bash")
+        run_shell_stream(cmd, env=env)
 
 def render_deploy():
     st.title("Deploy & Manage")
@@ -292,7 +564,7 @@ def render_docs():
     if selected_path:
         st.markdown(selected_path.read_text())
 
-def run_shell_stream(command):
+def run_shell_stream(command, env=None):
     """Run command and stream output to Streamlit."""
     process = subprocess.Popen(
         command,
@@ -300,7 +572,8 @@ def run_shell_stream(command):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        executable='/bin/zsh'
+        executable='/bin/zsh',
+        env=env
     )
     
     # Create an empty placeholder

@@ -2,9 +2,6 @@
 
   These are bigger ideas to evolve your project from a set of scripts into a mature, maintainable tool.
 
-   1. rework prerequisites check: make it with ansible
-      fix dry run
-
    2. Adopt a GitOps Flow:
        * Concept: Use Git as the central source of truth for your server configurations. Instead of a user running the pme_manager and immediately
          pushing changes to a server, the manager would help them commit a variable change to a Git repository.

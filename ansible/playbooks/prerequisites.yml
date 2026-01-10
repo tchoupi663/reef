@@ -1,0 +1,6 @@
+---
+- name: Check System Prerequisites
+  hosts: all
+  gather_facts: true
+  roles:
+    - role: prerequisites

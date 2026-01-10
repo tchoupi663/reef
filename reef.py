@@ -437,7 +437,7 @@ def get_inventory_hosts():
 @click.pass_context
 def cli(ctx, verbose):
     """
-    PME Security Automation Manager (REEF)
+    PME Security Infrastructure Manager (REEF)
     
     A CLI tool to manage the deployment, configuration, and maintenance
     of the PME security infrastructure (Wazuh, Suricata, Fail2Ban).
