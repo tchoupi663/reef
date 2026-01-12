@@ -166,3 +166,17 @@ Ansible
 - Dépôt Git contenant les scripts Terraform et Ansible
 - Schémas d’architecture
 - Documentation utilisateur à destination d’une PME
+
+## 7. How to Run (Manager)
+
+To verify the installation and use the graphical dashboard:
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Start the application
+python main.py
+```
+
+Then visit `http://localhost:8080` in your browser.
