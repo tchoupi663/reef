@@ -1,6 +1,6 @@
 from nicegui import ui
-from manager.core import GROUP_VARS_FILE, HOSTS_INI_FILE, load_current_config
-from manager.ui_utils import page_header, card_style, status_badge
+from reef.manager.core import GROUP_VARS_FILE, HOSTS_INI_FILE, load_current_config
+from reef.manager.ui_utils import page_header, card_style, status_badge
 
 def show_dashboard():
     page_header("Dashboard", "Security Infrastructure Manager")

@@ -1,6 +1,6 @@
 from nicegui import ui
-from manager.core import SchemaManager, update_yaml_config_from_schema, update_ini_inventory, load_current_config, BASE_DIR, GROUP_VARS_FILE, HOSTS_INI_FILE
-from manager.ui_utils import page_header, card_style
+from reef.manager.core import SchemaManager, update_yaml_config_from_schema, update_ini_inventory, load_current_config, BASE_DIR, GROUP_VARS_FILE, HOSTS_INI_FILE
+from reef.manager.ui_utils import page_header, card_style
 
 def show_configuration():
     page_header("Configuration", "Configure deployment variables")

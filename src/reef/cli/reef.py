@@ -1,4 +1,4 @@
-import click
+import reef.click
 import os
 import subprocess
 import sys
@@ -16,7 +16,8 @@ console = Console()
 VERBOSE_MODE = False
 
 # Configuration Paths
-BASE_DIR = Path(__file__).parent.resolve()
+# Configuration Paths
+BASE_DIR = Path(__file__).parent.parent.resolve()
 ANSIBLE_DIR = BASE_DIR / "ansible"
 INVENTORY_DIR = ANSIBLE_DIR / "inventory"
 GROUP_VARS_FILE = INVENTORY_DIR / "group_vars" / "all.yml"

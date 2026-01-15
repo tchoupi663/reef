@@ -4,8 +4,8 @@ setup(
     name='reef-manager',
     version='0.1.0',
     description='PME Security Infrastructure Manager',
-    packages=find_packages(),
-    py_modules=['entry', 'main'],
+    package_dir={'': 'src'},
+    packages=find_packages(where='src'),
     include_package_data=True,
     install_requires=[
         'click',
@@ -17,7 +17,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'reef=entry:main',
+            'reef=reef.entry:main',
         ],
     },
 )

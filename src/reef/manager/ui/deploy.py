@@ -2,8 +2,8 @@ from nicegui import ui
 import os
 import asyncio
 from pathlib import Path
-from manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, load_current_config, update_yaml_config_from_schema
-from manager.ui_utils import page_header, card_style, async_run_command, async_run_ansible_playbook
+from reef.manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, load_current_config, update_yaml_config_from_schema
+from reef.manager.ui_utils import page_header, card_style, async_run_command, async_run_ansible_playbook
 
 def show_deploy():
     page_header("Deploy & Manage", "Execute playbooks and manage lifecycle")

@@ -3,16 +3,18 @@ from pathlib import Path
 from nicegui import ui
 
 # Ensure path is set up (similar to original app.py)
-current_dir = str(Path(__file__).parent.resolve())
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+# Ensure path is set up (similar to original app.py)
+current_dir = Path(__file__).parent.resolve()
+src_dir = str(current_dir.parent)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
 # Import Pages
-from manager.ui.dashboard import show_dashboard
-from manager.ui.configuration import show_configuration
-from manager.ui.prerequisites import show_prerequisites
-from manager.ui.deploy import show_deploy
-from manager.ui.documentation import show_documentation
+from reef.manager.ui.dashboard import show_dashboard
+from reef.manager.ui.configuration import show_configuration
+from reef.manager.ui.prerequisites import show_prerequisites
+from reef.manager.ui.deploy import show_deploy
+from reef.manager.ui.documentation import show_documentation
 
 # --- App Layout & State ---
 

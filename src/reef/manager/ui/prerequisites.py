@@ -1,8 +1,8 @@
 from nicegui import ui
 import os
 from datetime import datetime
-from manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, BASE_DIR
-from manager.ui_utils import page_header, card_style, async_run_command, async_run_ansible_playbook
+from reef.manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, BASE_DIR
+from reef.manager.ui_utils import page_header, card_style, async_run_command, async_run_ansible_playbook
 
 def show_prerequisites():
     page_header("Prerequisites Check", "Verify system requirements and connectivity")

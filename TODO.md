@@ -2,6 +2,7 @@
 
   These are bigger ideas to evolve your project from a set of scripts into a mature, maintainable tool.
 
+  check that agents are comm correctly even if added after manager
   passwords are in clear
   add custom rules tab
 

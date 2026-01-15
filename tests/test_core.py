@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from manager import core
+from reef.manager import core
 
 @pytest.fixture
 def mock_ini_file(tmp_path):

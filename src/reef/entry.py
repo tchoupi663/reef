@@ -2,7 +2,8 @@ import sys
 import os
 
 # Ensure the current directory is in the python path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure the src directory is in the python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def main():
     """
@@ -29,14 +30,14 @@ def main():
         
     if use_cli:
         try:
-            from cli.reef import cli
+            from reef.cli.reef import cli
             cli()
         except ImportError as e:
             print(f"Error importing CLI module: {e}")
             sys.exit(1)
     else:
         try:
-            from main import run_app
+            from reef.main import run_app
             run_app()
         except ImportError as e:
             print(f"Error importing Main GUI module: {e}")

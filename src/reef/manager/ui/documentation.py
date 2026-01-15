@@ -1,6 +1,6 @@
 from nicegui import ui
-from manager.core import BASE_DIR
-from manager.ui_utils import page_header
+from reef.manager.core import BASE_DIR
+from reef.manager.ui_utils import page_header
 
 def show_documentation():
     page_header("Documentation", "Guides and References")

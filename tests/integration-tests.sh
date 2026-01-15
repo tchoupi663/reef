@@ -2,7 +2,7 @@
 # Wrapper to run Ansible playbook and then the test script
 
 echo "Running Ansible Playbook..."
-cd ../ansible
+cd ../src/reef/ansible
 ansible-playbook playbooks/deploy-prototype.yml
 
 if [ $? -eq 0 ]; then

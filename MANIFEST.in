@@ -1,0 +1,5 @@
+recursive-include src/reef/ansible *
+recursive-include src/reef/scripts *
+recursive-include src/reef/docs *
+include src/reef/config.schema.yml
+include src/reef/ansible.cfg
