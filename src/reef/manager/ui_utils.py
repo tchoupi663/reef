@@ -56,7 +56,7 @@ async def async_run_command(command: str, log_element: ui.log, on_complete=None)
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            executable='/bin/zsh',
+            executable='/bin/bash',
             cwd=str(BASE_DIR),
             env=_get_ansible_env()
         )
@@ -108,7 +108,7 @@ async def async_run_ansible_playbook(command: str, log_element: ui.log):
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            executable='/bin/zsh',
+            executable='/bin/bash',
             cwd=str(BASE_DIR),
             env=_get_ansible_env()
         )
