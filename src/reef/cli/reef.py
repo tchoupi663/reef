@@ -45,7 +45,7 @@ def run_command(command, cwd=BASE_DIR, quiet=False):
                     shell=True, 
                     check=True, 
                     cwd=cwd, 
-                    executable='/bin/zsh',
+                    executable='/bin/bash',
                     capture_output=True,
                     text=True,
                     env=env
@@ -57,7 +57,7 @@ def run_command(command, cwd=BASE_DIR, quiet=False):
                 shell=True, 
                 check=True, 
                 cwd=cwd,
-                executable='/bin/zsh',
+                executable='/bin/bash',
                 env=env
             )
         return True
@@ -96,7 +96,7 @@ def run_ansible_with_progress(command, cwd=BASE_DIR, total_tasks=100):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            executable='/bin/zsh',
+            executable='/bin/bash',
             env=env
         )
         
