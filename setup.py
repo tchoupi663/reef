@@ -12,7 +12,8 @@ setup(
         'rich',
         'ruamel.yaml',
         'nicegui',
-        'ansible-core'
+        'ansible-core',
+        'fpdf2'
         # pytest is for testing, so maybe extras_require, but keeping it simple as per requirements.txt
     ],
     entry_points={
