@@ -45,12 +45,13 @@ def show_deploy():
                         'fail2ban': ('Brute-Force Blocker', 'Automatically blocks IP addresses that try to guess passwords.'),
                         'ufw': ('Firewall', 'Basic network shield to control incoming connections.'),
                         'common': ('Base System Utilities', 'Essential tools required for the system to run.'),
+                        'cleanup': ('Cleanup', 'Remove all existing components.'),
                     }
 
                     with ui.grid(columns=2).classes('w-full gap-4'):
                         for role in all_roles:
                             # Skip internal roles
-                            if role in ['cleanup', 'prerequisites']:
+                            if role in ['prerequisites']:
                                 continue
                                 
                             meta = ROLE_METADATA.get(role, (role.title(), "System component"))

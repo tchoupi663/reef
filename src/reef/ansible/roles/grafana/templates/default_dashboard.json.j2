@@ -1011,7 +1011,7 @@
               "root_selector": "hits.hits",
               "source": "url",
               "type": "json",
-              "url": "https://192.168.64.12:9200/wazuh-states-inventory-ports-*/_search",
+              "url": "https://{{ wazuh_manager_ip | default("127.0.0.1") }}:9200/wazuh-states-inventory-ports-*/_search",
               "url_options": {
                 "body_content_type": "application/json",
                 "body_type": "raw",
@@ -1155,7 +1155,7 @@
               "root_selector": "hits.hits",
               "source": "url",
               "type": "json",
-              "url": "https://192.168.64.12:9200/wazuh-states-inventory-packages*/_search",
+              "url": "https://{{ wazuh_manager_ip | default("127.0.0.1") }}:9200/wazuh-states-inventory-packages*/_search",
               "url_options": {
                 "body_content_type": "application/json",
                 "body_type": "raw",
@@ -1299,7 +1299,7 @@
               "root_selector": "hits.hits",
               "source": "url",
               "type": "json",
-              "url": "https://192.168.64.12:9200/wazuh-states-inventory-users*/_search",
+              "url": "https://{{ wazuh_manager_ip | default("127.0.0.1") }}:9200/wazuh-states-inventory-users*/_search",
               "url_options": {
                 "body_content_type": "application/json",
                 "body_type": "raw",
@@ -1500,7 +1500,7 @@
               "root_selector": "hits.hits",
               "source": "url",
               "type": "json",
-              "url": "https://192.168.64.12:9200/wazuh-states-inventory-hardware*/_search",
+              "url": "https://{{ wazuh_manager_ip | default("127.0.0.1") }}:9200/wazuh-states-inventory-hardware*/_search",
               "url_options": {
                 "body_content_type": "application/json",
                 "body_type": "raw",
@@ -1647,7 +1647,7 @@
               "root_selector": "hits.hits",
               "source": "url",
               "type": "json",
-              "url": "https://192.168.64.12:9200/wazuh-states-inventory-hardware*/_search",
+              "url": "https://{{ wazuh_manager_ip | default("127.0.0.1") }}:9200/wazuh-states-inventory-hardware*/_search",
               "url_options": {
                 "body_content_type": "application/json",
                 "body_type": "raw",
@@ -1791,7 +1791,7 @@
               "root_selector": "hits.hits",
               "source": "url",
               "type": "json",
-              "url": "https://192.168.64.12:9200/wazuh-states-inventory-system*/_search",
+              "url": "https://{{ wazuh_manager_ip | default("127.0.0.1") }}:9200/wazuh-states-inventory-system*/_search",
               "url_options": {
                 "body_content_type": "application/json",
                 "body_type": "raw",
@@ -2480,7 +2480,7 @@
             "root_selector": "hits.hits",
             "source": "url",
             "type": "json",
-            "url": "https://192.168.64.12:9200/wazuh-states-inventory-*/_search",
+            "url": "https://{{ wazuh_manager_ip | default("127.0.0.1") }}:9200/wazuh-states-inventory-*/_search",
             "url_options": {
               "body_content_type": "text/plain",
               "body_type": "raw",

@@ -1,19 +1,18 @@
 ---
-- include_tasks: clean.yml
-#- name: Verify Wazuh installation directory exists
-#  stat:
-#    path: /opt/wazuh-install
-#  register: wazuh_install_dir
+- name: Verify Wazuh installation directory exists
+  stat:
+    path: /opt/wazuh-install
+  register: wazuh_install_dir
 
-#- name: Verify Wazuh configuration tarball exists
-#  stat:
-#    path: /opt/wazuh-install/wazuh-install-files.tar
-#  register: wazuh_config_tar
+- name: Verify Wazuh configuration tarball exists
+  stat:
+    path: /opt/wazuh-install/wazuh-install-files.tar
+  register: wazuh_config_tar
 
-#- name: Fail if Wazuh installation dependencies are missing
-#  fail:
-#    msg: "Wazuh installation directory or configuration tarball is missing. Ensure wazuh-indexer role runs first."
-#  when: not wazuh_install_dir.stat.exists or not wazuh_config_tar.stat.exists
+- name: Fail if Wazuh installation dependencies are missing
+  fail:
+    msg: "Wazuh installation directory or configuration tarball is missing. Ensure wazuh-indexer role runs first."
+  when: not wazuh_install_dir.stat.exists or not wazuh_config_tar.stat.exists
 
 - name: Install Wazuh Server
   command: ./wazuh-install.sh --wazuh-server {{ wazuh_server_node_name | default('wazuh-1') }} --overwrite
@@ -21,59 +20,27 @@
     chdir: /opt/wazuh-install
     creates: /var/ossec/bin/wazuh-control
 
+#demo only
+- name: Deploy custom demo rules
+  ansible.builtin.copy:
+    src: demo_rules.xml
+    dest: /var/ossec/etc/rules/demo_rules.xml
+    owner: wazuh
+    group: wazuh
+    mode: '0644'
+  register: demo_rules_update
+#demo only
+
 - name: Reload systemd daemon
   ansible.builtin.systemd:
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
-- name: Configure Wazuh manager syscollector interval
-  replace:
-    path: /var/ossec/etc/ossec.conf
-    regexp: '(?s)(<wodle name="syscollector">.*?<interval>)([^<]+)(</interval>)'
-    replace: '\g<1>15m\g<3>'
-
-- name: Enable logall in Wazuh manager configuration
-  replace:
-    path: /var/ossec/etc/ossec.conf
-    regexp: '<logall>.*?</logall>'
-    replace: '<logall>yes</logall>'
-
-- name: Add custom syscollector rules to local_rules.xml
-  blockinfile:
-    path: /var/ossec/etc/rules/local_rules.xml
-    marker: "<!-- {mark} ANSIBLE MANAGED BLOCK SYSCOLLECTOR -->"
-    block: |
-      <group name="syscollector_alerts,">
-
-        <rule id="100500" level="3">
-          <if_sid>221</if_sid>
-          <description>Syscollector: Inventory change detected</description>
-        </rule>
-
-        <rule id="100501" level="3">
-          <if_sid>100500</if_sid>
-          <field name="type">dbsync_ports</field>
-          <description>Inventory: Port change detected on $(agent.name)</description>
-        </rule>
-
-        <rule id="100502" level="3">
-          <if_sid>100500</if_sid>
-          <field name="type">dbsync_packages</field>
-          <description>Inventory: Package change detected on $(agent.name)</description>
-        </rule>
-
-        <rule id="100503" level="3">
-          <if_sid>100500</if_sid>
-          <field name="type">dbsync_users</field>
-          <description>Inventory: User account change detected on $(agent.name)</description>
-        </rule>
-
-      </group>
-
 - name: Enable and start manager service
   ansible.builtin.systemd:
     name: wazuh-manager
-    state: started
+    # state: started
+    state: "{{ 'restarted' if demo_rules_update.changed else 'started' }}"
     enabled: true
   ignore_errors: "{{ ansible_check_mode }}"
 

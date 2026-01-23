@@ -1,20 +1,19 @@
 ---
-- include_tasks: clean.yml
 
-#- name: Check if Wazuh installation directory exists
-#  stat:
-#    path: /opt/wazuh-install
-#  register: wazuh_install_dir
+- name: Check if Wazuh installation directory exists
+  stat:
+    path: /opt/wazuh-install
+  register: wazuh_install_dir
 
-#- name: Check if Wazuh installation script exists
-#  stat:
-#    path: /opt/wazuh-install/wazuh-install.sh
-#  register: wazuh_install_script
+- name: Check if Wazuh installation script exists
+  stat:
+    path: /opt/wazuh-install/wazuh-install.sh
+  register: wazuh_install_script
 
-#- name: Fail if Wazuh installation script is missing
-#  fail:
-#    msg: "Wazuh installation script not found. Ensure wazuh-indexer role has run successfully."
-#  when: not wazuh_install_dir.stat.exists or not wazuh_install_script.stat.exists
+- name: Fail if Wazuh installation script is missing
+  fail:
+    msg: "Wazuh installation script not found. Ensure wazuh-indexer role has run successfully."
+  when: not wazuh_install_dir.stat.exists or not wazuh_install_script.stat.exists
 
 
 - name: Install Wazuh Dashboard
@@ -38,14 +37,12 @@
         state: directory
       delegate_to: localhost
       run_once: true
-      become: false
 
     - name: Save Wazuh installation log to controller
       copy:
         content: "{{ installation_log['content'] | b64decode }}"
         dest: "{{ playbook_dir }}/../logs/wazuh_dashboard_error_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.log"
       delegate_to: localhost
-      become: false
       when: installation_log is success
 
     - name: Fail task after saving log

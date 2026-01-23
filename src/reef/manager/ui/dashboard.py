@@ -80,11 +80,11 @@ def show_dashboard():
 
     async def check_wazuh(label_status, spinner):
         try:
-            url = f"https://{manager_ip}"
+            url = f"http://{manager_ip}:3000"
             async with httpx.AsyncClient(verify=False, timeout=2.0) as client:
                 response = await client.get(url)
-                # Any response suggests it's up, even 401/403/200
-                if response.status_code in [200, 401, 403, 302]:
+
+                if response.status_code in [200, 302]:
                      spinner.visible = False
                      label_status.classes(remove='text-slate-500', add='text-emerald-400')
                      label_status.text = "Online"

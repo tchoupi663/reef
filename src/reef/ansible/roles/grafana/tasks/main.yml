@@ -94,8 +94,8 @@
   become: true
 
 - name: Copy Wazuh Dashboard
-  copy:
-    src: default_dashboard.json
+  template:
+    src: default_dashboard.json.j2
     dest: /var/lib/grafana/dashboards/wazuh.json
     owner: grafana
     group: grafana
