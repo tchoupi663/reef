@@ -31,6 +31,11 @@ variables:
     description: "Security Dashboard Port (Default: 443)"
     category: "Server Settings"
 
+  - name: ansible_ssh_private_key_file
+    type: string
+    default: ""
+    description: "SSH Private Key Path (e.g. ~/.ssh/id_rsa)"
+    category: "Server Settings"
 
   - name: fail2ban_bantime
     type: integer

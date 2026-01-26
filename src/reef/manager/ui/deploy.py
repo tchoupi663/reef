@@ -3,7 +3,7 @@ import os
 import asyncio
 from pathlib import Path
 from reef.manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, load_current_config, update_yaml_config_from_schema
-from reef.manager.ui_utils import page_header, card_style, async_run_command, async_run_ansible_playbook
+from reef.manager.ui_utils import page_header, card_style, async_run_command, async_run_ansible_playbook, app_state
 
 def show_deploy():
     page_header("Installation & Management", "Install, update, or remove security software")
@@ -145,7 +145,13 @@ def show_deploy():
 
                 # Deployment Action
                 with ui.column().classes(card_style() + ' w-full'):
-                    btn_deploy = ui.button("🚀 Start Installation", on_click=lambda: run_deployment()).classes('bg-indigo-600 w-full py-4 text-lg')
+                    with ui.row().classes('w-full gap-4'):
+                        btn_deploy = ui.button("Deploy", on_click=lambda: run_deployment()).classes('bg-indigo-600 flex-grow py-4 text-lg')
+                        btn_stop_deploy = ui.button("Stop", on_click=app_state.cancel_process).classes('bg-red-900 w-1/6 py-4 text-lg')
+                        
+                        btn_deploy.bind_enabled_from(app_state, 'running_process', backward=lambda x: x is None)
+                        btn_stop_deploy.bind_enabled_from(app_state, 'running_process', backward=lambda x: x is not None)
+
                     credentials_container = ui.column().classes('w-full mt-4 hidden')
                     deploy_log = ui.log().classes('w-full h-64 bg-slate-900 font-mono text-xs p-4 rounded-xl border border-white/10 mt-4')
 
@@ -159,7 +165,6 @@ def show_deploy():
                 credentials_container.classes(add='hidden')
                 credentials_container.clear()
                 results_container.clear()
-                btn_deploy.disable()
                 
 
                 
@@ -205,8 +210,6 @@ def show_deploy():
 
                 if ret_code == 0:
                      check_credentials(full_output)
-                
-                btn_deploy.enable()
 
             def check_credentials(output):
                 # Attempt to retrieve credentials
@@ -267,4 +270,9 @@ def show_deploy():
                     cmd = f"ansible-playbook {playbook} -i {inventory} -e '{{\"enabled_roles\": [\"cleanup\"]}}'"
                     await async_run_command(cmd, cleanup_log)
 
-                ui.button("🔥 Uninstall Everything", on_click=lambda: run_cleanup()).classes('bg-rose-600 w-full py-4 text-lg')
+                with ui.row().classes('w-full gap-4'):
+                    btn_cleanup = ui.button("Uninstall Everything", on_click=lambda: run_cleanup()).classes('bg-rose-600 flex-grow py-4 text-lg')
+                    btn_stop_cleanup = ui.button("Stop", on_click=app_state.cancel_process).classes('bg-red-900 w-1/6 py-4 text-lg')
+                    
+                    btn_cleanup.bind_enabled_from(app_state, 'running_process', backward=lambda x: x is None)
+                    btn_stop_cleanup.bind_enabled_from(app_state, 'running_process', backward=lambda x: x is not None)

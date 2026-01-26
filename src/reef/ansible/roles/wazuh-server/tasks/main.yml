@@ -18,7 +18,7 @@
   command: ./wazuh-install.sh --wazuh-server {{ wazuh_server_node_name | default('wazuh-1') }} --overwrite
   args:
     chdir: /opt/wazuh-install
-    creates: /var/ossec/bin/wazuh-control
+    creates: /var/ossec/bin/wazuh-analysisd
 
 #demo only
 - name: Deploy custom demo rules
@@ -44,8 +44,38 @@
     enabled: true
   ignore_errors: "{{ ansible_check_mode }}"
 
+- name: Configure Vulnerability Detection (Ubuntu Noble)
+  replace:
+    path: /var/ossec/etc/ossec.conf
+    regexp: '(?ms)<vulnerability-detection>.*?</vulnerability-detection>'
+    replace: |
+      <vulnerability-detection>
+         <enabled>yes</enabled>
+         <index-status>yes</index-status>
+         <feed-update-interval>60m</feed-update-interval>
+         <providers>
+            <provider name="canonical">
+               <enabled>yes</enabled>
+               <os>noble</os>
+               <update_interval>1h</update_interval>
+            </provider>
+         </providers>
+      </vulnerability-detection>
+  ignore_errors: "{{ ansible_check_mode }}"
+  notify: restart wazuh-manager
+
+- name: Enable Manager Self-Scanning (Internal Options)
+  lineinfile:
+    path: /var/ossec/etc/local_internal_options.conf
+    line: 'vulnerability-detection.disable_scan_manager=0'
+    create: yes
+    owner: root
+    group: wazuh
+    mode: '0640'
+  notify: restart wazuh-manager
+
 - name: Enable and start Filebeat service
-  ansible.builtin.systemd:
+  systemd:
     name: filebeat
     state: started
     enabled: true
