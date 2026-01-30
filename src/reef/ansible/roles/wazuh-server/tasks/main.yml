@@ -52,12 +52,12 @@
       <vulnerability-detection>
          <enabled>yes</enabled>
          <index-status>yes</index-status>
-         <feed-update-interval>60m</feed-update-interval>
+         <feed-update-interval>15m</feed-update-interval>
          <providers>
             <provider name="canonical">
                <enabled>yes</enabled>
                <os>noble</os>
-               <update_interval>1h</update_interval>
+               <update_interval>15m</update_interval>
             </provider>
          </providers>
       </vulnerability-detection>

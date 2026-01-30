@@ -10,7 +10,14 @@
   <!-- Example: Custom trigger for a specific file access -->
   <rule id="100002" level="12">
     <if_group>syscheck</if_group>
-    <match>/etc/passwd</match>
+    <field name="syscheck.path">/etc/passwd</field>
     <description>DEMO: Critical Alert - /etc/passwd was modified!</description>
+  </rule>
+  <!-- Example: Manual "Magic Word" trigger -->
+  <!-- logger "SIMULATED_ATTACK: Detected unauthorized rootkit installation" -->
+  <rule id="100003" level="14">
+    <if_group>syslog</if_group>
+    <match>SIMULATED_ATTACK</match>
+    <description>DEMO: Manual Simulated Attack Triggered</description>
   </rule>
 </group>
