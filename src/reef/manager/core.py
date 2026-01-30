@@ -352,8 +352,12 @@ def generate_terraform_vm_config(vm_specs, manager_ip=None, manager_ssh_user=Non
     
     Returns: {'success': True/False, 'terraform_dir': path, 'message': str}
     """
-    import crypt
     import time
+    import urllib.parse
+    try:
+        from passlib.hash import sha512_crypt
+    except Exception as e:
+        return {'success': False, 'message': f"Password hashing library missing: {e}. Please install 'passlib'."}
     
     try:
         terraform_dir = TERRAFORM_DIR
@@ -381,7 +385,7 @@ def generate_terraform_vm_config(vm_specs, manager_ip=None, manager_ssh_user=Non
         vms_data = []
         for spec in vm_specs:
             plain_pwd = spec.get('ssh_password', 'ubuntu')
-            hashed = crypt.crypt(plain_pwd, crypt.METHOD_SHA512)
+            hashed = sha512_crypt.hash(plain_pwd)
             vm_name_raw = spec.get('name', 'vm-unknown')
             # Derive a safe username: lowercase, keep alnum and dashes only; fallback to 'ubuntu' if empty
             import re
@@ -463,16 +467,17 @@ resource "libvirt_domain" "{vm_name}" {{
   machine   = "pc"
   arch      = "x86_64"
   type      = "qemu"
-    qemu_agent  = true
+        qemu_agent  = false
 
   disk {{
     volume_id = libvirt_volume.{vm_name}_disk.id
   }}
 
-  network_interface {{
-    network_name  = "default"
-    wait_for_lease = true
-  }}
+    network_interface {{
+        network_name  = "default"
+        # Default to waiting for DHCP lease to avoid dependency on guest agent timing
+        wait_for_lease = true
+    }}
 
   cloudinit = libvirt_cloudinit_disk.{vm_name}_init.id
 
@@ -480,14 +485,14 @@ resource "libvirt_domain" "{vm_name}" {{
 }}
 """
         
-        # Add outputs
-        main_tf_content += "\n# Outputs: IP addresses for each VM\n"
+        # Add outputs (resilient): wrap in try() to avoid hard failure when IP is not yet available
+        main_tf_content += "\n# Outputs: IP addresses for each VM (resilient)\n"
         for vm in vms_data:
             vm_name = vm['name']
             main_tf_content += f"""
 output "{vm_name}_ip" {{
-  value       = libvirt_domain.{vm_name}.network_interface[0].addresses[0]
-  description = "IP address of {vm_name}"
+    value       = try(libvirt_domain.{vm_name}.network_interface[0].addresses[0], null)
+    description = "IP address of {vm_name} (may be null until guest agent reports)"
 }}
 """
         
@@ -953,9 +958,60 @@ echo "[LIBVIRT SETUP] Complete"
         plan_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
         result = subprocess.run(plan_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
-            if log_callback:
-                log_callback(f"[TF] Plan stderr: {result.stderr}\n")
-            return {'success': False, 'message': f"terraform plan failed: {result.stderr}"}
+            # Detect concurrent terraform process to avoid unsafe unlocks
+            try:
+                check_proc_cmd = (
+                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"{manager_user}@{manager_ip} 'pgrep -a terraform || true'"
+                )
+                proc_check = subprocess.run(check_proc_cmd, shell=True, capture_output=True, text=True)
+                if proc_check.stdout.strip():
+                    if log_callback:
+                        log_callback("[TF] Another terraform process is running on manager. Aborting to avoid state corruption.\n")
+                    return {
+                        'success': False,
+                        'message': 'terraform plan failed: another terraform process is running on the manager; please stop it and retry'
+                    }
+            except Exception:
+                pass
+
+            # Attempt automatic unlock if state lock error is detected, then retry plan once
+            stderr = result.stderr or ""
+            stdout = result.stdout or ""
+            combined = stderr + "\n" + stdout
+            lock_err = ("Error acquiring the state lock" in combined) or ("state lock" in combined)
+            if lock_err:
+                if log_callback:
+                    log_callback("[TF] Detected Terraform state lock. Attempting force-unlock...\n")
+                import re
+                m = re.search(r"ID:\s*([0-9a-f\-]+)", combined, re.IGNORECASE)
+                lock_id = m.group(1) if m else None
+                # Prefer using force-unlock; fall back to removing local lock info file if present
+                if lock_id:
+                    unlock_cmd = (
+                        f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                        f"{manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform force-unlock {lock_id}'"
+                    )
+                    _ = subprocess.run(unlock_cmd, shell=True, capture_output=True, text=True)
+                # Clean up lock info file if it exists (local backend)
+                cleanup_lock_cmd = (
+                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"{manager_user}@{manager_ip} 'cd {remote_tf_dir} && rm -f .terraform.tfstate.lock.info'"
+                )
+                _ = subprocess.run(cleanup_lock_cmd, shell=True, capture_output=True, text=True)
+
+                # Retry plan once
+                if log_callback:
+                    log_callback("[TF] Retrying: terraform plan (after unlock)\n")
+                result_retry = subprocess.run(plan_cmd, shell=True, capture_output=True, text=True)
+                if result_retry.returncode != 0:
+                    if log_callback:
+                        log_callback(f"[TF] Plan retry failed: {(result_retry.stderr or '')}\n")
+                    return {'success': False, 'message': f"terraform plan failed after unlock attempt: {result_retry.stderr}"}
+            else:
+                if log_callback:
+                    log_callback(f"[TF] Plan stderr: {result.stderr}\n")
+                return {'success': False, 'message': f"terraform plan failed: {result.stderr}"}
         
         # Step 6: Run terraform apply on manager
         if log_callback:
@@ -1003,6 +1059,76 @@ echo "[LIBVIRT SETUP] Complete"
                         if not (("Cannot allocate memory" in (result_apply.stdout or "")) or ("cannot set up guest memory" in (result_apply.stderr or ""))):
                             break
                 return {'success': False, 'message': 'terraform apply failed due to insufficient RAM on manager (auto-retries exhausted)'}
+
+            # Retry logic for IP retrieval failures
+            guest_agent_err = ("Guest agent is not responding" in apply_out) or ("guest agent is not connected" in apply_out.lower())
+            lease_timeout_err = ("context deadline exceeded" in apply_out.lower()) or ("timeout waiting for lease" in apply_out.lower()) or ("couldn't retrieve IP address of domain" in apply_out)
+            if guest_agent_err:
+                if log_callback:
+                    log_callback("[TF] Guest agent not ready; using DHCP lease and disabling qemu_agent...\n")
+                # Ensure we do not rely on guest agent for IP retrieval
+                disable_agent_cmd = (
+                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"{manager_user}@{manager_ip} 'sed -ri \"s/^[[:space:]]*qemu_agent[[:space:]]*=[[:space:]]*true/  qemu_agent  = false/g\" {remote_tf_dir}/main.tf'"
+                )
+                _ = subprocess.run(disable_agent_cmd, shell=True)
+                enable_wait_cmd = (
+                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"{manager_user}@{manager_ip} 'sed -ri \"s/^[[:space:]]*wait_for_lease[[:space:]]*=[[:space:]]*false/  wait_for_lease = true/g\" {remote_tf_dir}/main.tf'"
+                )
+                _ = subprocess.run(enable_wait_cmd, shell=True)
+                wait_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sleep 10'"
+                _ = subprocess.run(wait_cmd, shell=True)
+                plan_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+                result_plan = subprocess.run(plan_cmd_retry, shell=True, capture_output=True, text=True)
+                if result_plan.returncode != 0:
+                    if log_callback:
+                        log_callback(f"[TF] Plan retry failed after disabling agent and enabling lease wait: {result_plan.stderr}\n")
+                    return {'success': False, 'message': f"terraform plan failed after disabling agent and enabling lease-wait: {result_plan.stderr}"}
+                apply_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+                result_apply = subprocess.run(apply_cmd_retry, shell=True, capture_output=True, text=True)
+                if result_apply.returncode == 0:
+                    if log_callback:
+                        log_callback("[TF] Terraform apply succeeded using DHCP lease (qemu_agent disabled)\n")
+                    return {
+                        'success': True,
+                        'message': 'Terraform apply successful (lease wait enabled, qemu_agent disabled)',
+                        'output': result_apply.stdout
+                    }
+                else:
+                    if log_callback:
+                        log_callback(f"[TF] Apply retry still failing: {(result_apply.stdout or '')}\n{(result_apply.stderr or '')}\n")
+                    return {'success': False, 'message': f"terraform apply failed after enabling lease-wait: {result_apply.stderr}"}
+            elif lease_timeout_err:
+                if log_callback:
+                    log_callback("[TF] Lease timeout; disabling wait_for_lease and retrying...\n")
+                disable_wait_cmd = (
+                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"{manager_user}@{manager_ip} 'sed -ri \"s/^[[:space:]]*wait_for_lease[[:space:]]*=[[:space:]]*true/  wait_for_lease = false/g\" {remote_tf_dir}/main.tf'"
+                )
+                _ = subprocess.run(disable_wait_cmd, shell=True)
+                wait_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sleep 5'"
+                _ = subprocess.run(wait_cmd, shell=True)
+                plan_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+                result_plan = subprocess.run(plan_cmd_retry, shell=True, capture_output=True, text=True)
+                if result_plan.returncode != 0:
+                    if log_callback:
+                        log_callback(f"[TF] Plan retry failed after disabling lease wait: {result_plan.stderr}\n")
+                    return {'success': False, 'message': f"terraform plan failed after lease-wait disable: {result_plan.stderr}"}
+                apply_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+                result_apply = subprocess.run(apply_cmd_retry, shell=True, capture_output=True, text=True)
+                if result_apply.returncode == 0:
+                    if log_callback:
+                        log_callback("[TF] Terraform apply succeeded after disabling lease wait\n")
+                    return {
+                        'success': True,
+                        'message': 'Terraform apply successful (lease-wait disabled)',
+                        'output': result_apply.stdout
+                    }
+                else:
+                    if log_callback:
+                        log_callback(f"[TF] Apply retry still failing: {(result_apply.stdout or '')}\n{(result_apply.stderr or '')}\n")
+                    return {'success': False, 'message': f"terraform apply failed after lease-wait disable: {result_apply.stderr}"}
             return {'success': False, 'message': f"terraform apply failed: {result.stderr}"}
         
         if log_callback:

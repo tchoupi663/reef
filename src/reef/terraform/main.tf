@@ -26,56 +26,57 @@ resource "libvirt_volume" "ubuntu_base" {
 }
 
 
-# Disque pour VM: test
-resource "libvirt_volume" "test_disk" {
-  name           = "test.qcow2"
+# Disque pour VM: testtt
+resource "libvirt_volume" "testtt_disk" {
+  name           = "testtt.qcow2"
   pool           = "default"
   base_volume_id = libvirt_volume.ubuntu_base.id
   format         = "qcow2"
 }
 
-# Cloud-init pour VM: test
-resource "libvirt_cloudinit_disk" "test_init" {
-  name = "cloudinit-test-90951153.iso"
+# Cloud-init pour VM: testtt
+resource "libvirt_cloudinit_disk" "testtt_init" {
+  name = "cloudinit-testtt-35137864.iso"
   pool = "default"
 
   user_data = templatefile(
     "${path.module}/cloud_init.cfg",
     {
-      hostname    = "test"
-            user_name   = "test"
-      user_passwd = "$6$l4/eQa0OIvVJEp3f$RIvfU2KhVqhXXB7o4XsCvUHWxm6M8buXpsdxlE4GVDhhcPRFY67zxmQ0Yp7aIaI6KqJzER3MZp5Eo7AVbJgNF0"
+      hostname    = "testtt"
+            user_name   = "testtt"
+      user_passwd = "$6$rounds=656000$IOhY7aQGQBmYapm1$1TubGoAfloYrYkBUgOLltnkbYkYBAJS3iEDDl0vkuEVZ2VUZqQCUhTXk0SB/sKJ6M.EDxKLzT7AtAuw0mNtT7."
     }
   )
 }
 
-# VM: test
-resource "libvirt_domain" "test" {
-  name      = "test"
+# VM: testtt
+resource "libvirt_domain" "testtt" {
+  name      = "testtt"
     memory    = 512
   vcpu      = 1
   machine   = "pc"
   arch      = "x86_64"
   type      = "qemu"
-    qemu_agent  = true
+        qemu_agent  = false
 
   disk {
-    volume_id = libvirt_volume.test_disk.id
+    volume_id = libvirt_volume.testtt_disk.id
   }
 
-  network_interface {
-    network_name  = "default"
-    wait_for_lease = true
-  }
+    network_interface {
+        network_name  = "default"
+        # Default to waiting for DHCP lease to avoid dependency on guest agent timing
+        wait_for_lease = true
+    }
 
-  cloudinit = libvirt_cloudinit_disk.test_init.id
+  cloudinit = libvirt_cloudinit_disk.testtt_init.id
 
   depends_on = [libvirt_volume.ubuntu_base]
 }
 
-# Outputs: IP addresses for each VM
+# Outputs: IP addresses for each VM (resilient)
 
-output "test_ip" {
-  value       = libvirt_domain.test.network_interface[0].addresses[0]
-  description = "IP address of test"
+output "testtt_ip" {
+    value       = try(libvirt_domain.testtt.network_interface[0].addresses[0], null)
+    description = "IP address of testtt (may be null until guest agent reports)"
 }
