@@ -93,12 +93,11 @@
   run_once: true
 
 - name: Save Wazuh admin password to local file
-  shell: |
-    echo "{{ wazuh_password.stdout | default('(Dry Run: Password not available)') }}" > "{{ playbook_dir }}/../inventory/wazuh-admin-password.txt"
+  copy:
+    content: "{{ wazuh_password.stdout | default('(Dry Run: Password not available)') }}\n"
+    dest: "{{ playbook_dir }}/../inventory/wazuh-admin-password.txt"
+    mode: '0600'
   delegate_to: localhost
   run_once: true
   become: false
-  changed_when: false
   when: not ansible_check_mode
-  async: 10
-  poll: 0

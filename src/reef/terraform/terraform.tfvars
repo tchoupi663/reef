@@ -1,1 +1,1 @@
-libvirt_uri = "qemu+ssh://ubuntu:master@192.168.122.218/system"
+libvirt_uri = "qemu+ssh://ubuntu@192.168.2.3/system?keyfile=~/.ssh/ubuntu-main"

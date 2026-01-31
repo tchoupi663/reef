@@ -160,9 +160,9 @@ def load_current_config():
     return {}
 
 def get_manager_credentials_from_inventory():
-    """Extract Manager IP, SSH user, and SSH password from hosts.ini [security_server] section"""
+    """Extract Manager IP, SSH user, SSH password, and SSH key from hosts.ini [security_server] section"""
     if not HOSTS_INI_FILE.exists():
-        return None, None, None
+        return None, None, None, None
     
     try:
         content = HOSTS_INI_FILE.read_text()
@@ -171,6 +171,7 @@ def get_manager_credentials_from_inventory():
         manager_ip = None
         manager_user = 'ubuntu'
         manager_password = None
+        manager_key = None
         
         for line in lines:
             line = line.strip()
@@ -193,11 +194,13 @@ def get_manager_credentials_from_inventory():
                             manager_user = part.split('=', 1)[1]
                         elif part.startswith('ansible_password='):
                             manager_password = part.split('=', 1)[1]
+                        elif part.startswith('ansible_ssh_private_key_file='):
+                            manager_key = part.split('=', 1)[1]
         
-        return manager_ip, manager_user, manager_password
+        return manager_ip, manager_user, manager_password, manager_key
     except Exception as e:
         console.print(f"[bold red]Error parsing hosts.ini:[/bold red] {e}")
-        return None, None, None
+        return None, None, None, None
 
 def update_yaml_config_from_schema(config_data):
     """Update ansible/inventory/group_vars/all.yml preserving comments."""
@@ -217,6 +220,12 @@ def update_yaml_config_from_schema(config_data):
 
         # Update values
         for key, value in config_data.items():
+            # Special handling for ansible_ssh_private_key_file: don't write empty
+            if key == 'ansible_ssh_private_key_file' and not value:
+                if key in data:
+                    del data[key]
+                continue
+                
             data[key] = value
 
         with open(GROUP_VARS_FILE, 'w') as f:
@@ -337,7 +346,7 @@ def get_inventory_hosts():
 
     return hosts
 
-def generate_terraform_vm_config(vm_specs, manager_ip=None, manager_ssh_user=None, manager_ssh_password=None):
+def generate_terraform_vm_config(vm_specs, manager_ip=None, manager_ssh_user=None, manager_ssh_password=None, manager_ssh_key=None):
     """
     Generate Terraform configuration files (main.tf and terraform.tfvars) for the specified VMs.
     
@@ -348,7 +357,8 @@ def generate_terraform_vm_config(vm_specs, manager_ip=None, manager_ssh_user=Non
     
     manager_ip: IP of the manager (required)
     manager_ssh_user: SSH user for manager (default: ubuntu)
-    manager_ssh_password: SSH password for manager (required for password auth)
+    manager_ssh_password: SSH password for manager (optional if key provided)
+    manager_ssh_key: SSH private key path for manager (optional if password provided)
     
     Returns: {'success': True/False, 'terraform_dir': path, 'message': str}
     """
@@ -372,12 +382,13 @@ def generate_terraform_vm_config(vm_specs, manager_ip=None, manager_ssh_user=Non
             manager_ip = cfg.get('wazuh_manager_ip')
             manager_ssh_user = manager_ssh_user or cfg.get('manager_ssh_user', 'ubuntu')
             manager_ssh_password = manager_ssh_password or cfg.get('manager_ssh_password')
+            manager_ssh_key = manager_ssh_key or cfg.get('manager_ssh_key')
         
         if not manager_ip:
             return {'success': False, 'message': "Manager IP not provided and not found in configuration"}
         
-        if not manager_ssh_password:
-            return {'success': False, 'message': "Manager SSH password not found in configuration. Please set it in Configuration tab."}
+        if not manager_ssh_password and not manager_ssh_key:
+            return {'success': False, 'message': "Manager SSH credentials (password or key) not found."}
         
         manager_ssh_user = manager_ssh_user or 'ubuntu'
         
@@ -503,15 +514,23 @@ output "{vm_name}_ip" {{
         
         # Write terraform.tfvars with libvirt URI (including password for SSH auth)
         tfvars_path = terraform_dir / "terraform.tfvars"
-        # Format: qemu+ssh://user:password@host/system (password will be percent-encoded if needed)
-        encoded_password = urllib.parse.quote(manager_ssh_password, safe='')
-        libvirt_uri = f"qemu+ssh://{manager_ssh_user}:{encoded_password}@{manager_ip}/system"
+        
+        libvirt_uri = "qemu:///system" # Default fallback
+        
+        if manager_ssh_password:
+             encoded_password = urllib.parse.quote(manager_ssh_password, safe='')
+             libvirt_uri = f"qemu+ssh://{manager_ssh_user}:{encoded_password}@{manager_ip}/system"
+        elif manager_ssh_key:
+             # qemu+ssh://user@host/system?keyfile=path
+             # Note: run_terraform_apply will override this for local execution anyway
+             libvirt_uri = f"qemu+ssh://{manager_ssh_user}@{manager_ip}/system?keyfile={manager_ssh_key}"
+
         tfvars_content = f'libvirt_uri = "{libvirt_uri}"\n'
         with open(tfvars_path, 'w') as f:
             f.write(tfvars_content)
         
         console.print(f"[green]Generated {main_tf_path} with {len(vms_data)} VMs[/green]")
-        console.print(f"[green]libvirt_uri: qemu+ssh://{manager_ssh_user}:***@{manager_ip}/system (SSH password embedded)[/green]")
+        console.print(f"[green]libvirt_uri configured for {manager_ip}[/green]")
         
         return {
             'success': True,
@@ -528,7 +547,7 @@ output "{vm_name}_ip" {{
         return {'success': False, 'message': str(e)}
 
 
-def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, manager_ip=None, manager_user=None):
+def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, manager_ip=None, manager_user=None, ssh_key=None):
     """
     Execute terraform init, plan, and apply on the manager machine via SSH.
     
@@ -540,6 +559,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
     ssh_password: SSH password for the manager
     manager_ip: IP of the manager machine
     manager_user: SSH user for the manager
+    ssh_key: SSH private key path
     
     Returns: {'success': True/False, 'message': str, 'output': str}
     """
@@ -548,8 +568,17 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
         if not terraform_dir.exists():
             return {'success': False, 'message': f"Terraform dir not found: {terraform_dir}"}
         
-        if not manager_ip or not manager_user or not ssh_password:
-            return {'success': False, 'message': "Manager IP, user, and password required"}
+        if not manager_ip or not manager_user or (not ssh_password and not ssh_key):
+             return {'success': False, 'message': "Manager IP, user, and credentials (password or key) required"}
+        
+        # Define command prefixes
+        if ssh_password:
+             ssh_cmd_prefix = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip}"
+             scp_cmd_prefix = f"sshpass -p '{ssh_password}' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        else:
+             key_opt = f"-i {ssh_key}" if ssh_key else ""
+             ssh_cmd_prefix = f"ssh {key_opt} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip}"
+             scp_cmd_prefix = f"scp {key_opt} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
         
         if log_callback:
             log_callback(f"[TF] Connecting to manager via SSH: {manager_user}@{manager_ip}\n")
@@ -561,21 +590,26 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
         if log_callback:
             log_callback("[TF] Checking dependencies on manager...\n")
         
-        # Check if terraform is installed
-        check_tf_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'which terraform'"
+        # Check if terraform is installed and executable
+        check_tf_cmd = f"{ssh_cmd_prefix} 'terraform version'"
         result = subprocess.run(check_tf_cmd, shell=True, capture_output=True, text=True)
         
         if result.returncode != 0:
             if log_callback:
-                log_callback("[TF] Terraform not found on manager, installing...\n")
+                log_callback(f"[TF] Terraform not functional on manager (err: {result.stderr.strip()}), reinstalling...\n")
             
-            # Install Terraform
-            install_tf_cmd = f"""sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo apt-get update && sudo apt-get install -y unzip && wget https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip && unzip terraform_1.5.7_linux_amd64.zip && sudo mv terraform /usr/local/bin/ && rm terraform_1.5.7_linux_amd64.zip'"""
+            # Remove potentially broken binary
+            remove_cmd = f"{ssh_cmd_prefix} 'sudo rm -f /usr/local/bin/terraform'"
+            subprocess.run(remove_cmd, shell=True)
+            
+            # Install Terraform (auto-detect architecture)
+            install_tf_cmd = f"""{ssh_cmd_prefix} 'sudo apt-get update && sudo apt-get install -y unzip && ARCH=$(dpkg --print-architecture) && if [ "$ARCH" = "aarch64" ]; then ARCH="arm64"; fi && wget https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_$ARCH.zip && unzip terraform_1.5.7_linux_$ARCH.zip && sudo mv terraform /usr/local/bin/ && rm terraform_1.5.7_linux_$ARCH.zip'"""
             
             result = subprocess.run(install_tf_cmd, shell=True, capture_output=True, text=True)
             if result.returncode != 0:
                 if log_callback:
                     log_callback(f"[TF] Warning: Failed to install Terraform: {result.stderr}\n")
+                    log_callback(f"[TF] Command output: {result.stdout}\n") # Added for debugging
                     log_callback("[TF] Continuing anyway, Terraform may already be installed or in PATH\n")
         else:
             if log_callback:
@@ -585,7 +619,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
         if log_callback:
             log_callback("[TF] Repairing apt/dpkg state on manager...\n")
         
-        repair_dpkg_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo dpkg --configure -a && sudo rm -f /var/lib/apt/lists/* && sudo apt-get update || true'"
+        repair_dpkg_cmd = f"{ssh_cmd_prefix} 'sudo dpkg --configure -a && sudo rm -f /var/lib/apt/lists/* && sudo apt-get update || true'"
         result = subprocess.run(repair_dpkg_cmd, shell=True, capture_output=True, text=True)
         if log_callback:
             log_callback("[TF] apt/dpkg repair completed\n")
@@ -594,7 +628,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
         if log_callback:
             log_callback("[TF] Checking libvirt daemon installation...\n")
         
-        check_service_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'systemctl list-unit-files | grep libvirtd'"
+        check_service_cmd = f"{ssh_cmd_prefix} 'systemctl list-unit-files | grep libvirtd'"
         result = subprocess.run(check_service_cmd, shell=True, capture_output=True, text=True)
         
         if result.returncode != 0 or "libvirtd" not in result.stdout:
@@ -602,7 +636,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
                 log_callback("[TF] libvirt daemon service not found, installing complete libvirt package...\n")
             
             # Install libvirt with all dependencies
-            install_libvirt_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo apt-get update && sudo apt-get install -y libvirt-daemon libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-kvm libvirt-daemon-driver-qemu virt-manager --no-install-recommends'"
+            install_libvirt_cmd = f"{ssh_cmd_prefix} 'sudo apt-get update && sudo apt-get install -y libvirt-daemon libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-kvm libvirt-daemon-driver-qemu virt-manager --no-install-recommends'"
             result = subprocess.run(install_libvirt_cmd, shell=True, capture_output=True, text=True)
             if result.returncode != 0:
                 if log_callback:
@@ -616,7 +650,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
                 log_callback("[TF] libvirt daemon service found on manager\n")
         
         # Check if libvirt daemon is running
-        check_daemon_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo systemctl is-active libvirtd'"
+        check_daemon_cmd = f"{ssh_cmd_prefix} 'sudo systemctl is-active libvirtd'"
         result = subprocess.run(check_daemon_cmd, shell=True, capture_output=True, text=True)
         
         if result.returncode != 0 or "active" not in result.stdout:
@@ -624,7 +658,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
                 log_callback("[TF] libvirt daemon not running, starting...\n")
             
             # Start libvirt daemon
-            start_daemon_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo systemctl start libvirtd && sudo systemctl enable libvirtd'"
+            start_daemon_cmd = f"{ssh_cmd_prefix} 'sudo systemctl start libvirtd && sudo systemctl enable libvirtd'"
             result = subprocess.run(start_daemon_cmd, shell=True, capture_output=True, text=True)
             if result.returncode != 0:
                 if log_callback:
@@ -640,7 +674,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
         if log_callback:
             log_callback(f"[TF] Ensuring {manager_user} has libvirt socket access...\n")
         
-        add_group_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo usermod -a -G libvirt {manager_user} && sudo usermod -a -G kvm {manager_user}'"
+        add_group_cmd = f"{ssh_cmd_prefix} 'sudo usermod -a -G libvirt {manager_user} && sudo usermod -a -G kvm {manager_user}'"
         result = subprocess.run(add_group_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             if log_callback:
@@ -650,7 +684,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
         if log_callback:
             log_callback("[TF] Restarting libvirt daemon to apply group changes...\n")
         
-        restart_daemon_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo systemctl restart libvirtd && sleep 2'"
+        restart_daemon_cmd = f"{ssh_cmd_prefix} 'sudo systemctl restart libvirtd && sleep 2'"
         result = subprocess.run(restart_daemon_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             if log_callback:
@@ -663,7 +697,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
         if log_callback:
             log_callback("[TF] Verifying libvirt socket accessibility...\n")
         
-        verify_socket_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'test -S /var/run/libvirt/libvirt-sock && echo \"Socket accessible\" || (ls -la /var/run/libvirt/ && id)'"
+        verify_socket_cmd = f"{ssh_cmd_prefix} 'test -S /var/run/libvirt/libvirt-sock && echo \"Socket accessible\" || (ls -la /var/run/libvirt/ && id)'"
         result = subprocess.run(verify_socket_cmd, shell=True, capture_output=True, text=True)
         if log_callback:
             log_callback(f"[TF] Socket check: {result.stdout}\n")
@@ -672,7 +706,7 @@ def run_terraform_apply(terraform_dir, log_callback=None, ssh_password=None, man
         if log_callback:
             log_callback("[TF] Installing genisoimage for cloud-init...\n")
         
-        install_genisoimage_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo apt-get update -qq && sudo apt-get install -y genisoimage && which mkisofs'"
+        install_genisoimage_cmd = f"{ssh_cmd_prefix} 'sudo apt-get update -qq && sudo apt-get install -y genisoimage && which mkisofs'"
         result = subprocess.run(install_genisoimage_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0 or "mkisofs" not in result.stdout:
             if log_callback:
@@ -702,8 +736,8 @@ sudo apt-get install -y dnsmasq > /dev/null 2>&1 || true
 echo "[LIBVIRT SETUP] Configuring libvirt security driver (none)..."
 if [ -f /etc/libvirt/qemu.conf ]; then
     sudo cp -n /etc/libvirt/qemu.conf /etc/libvirt/qemu.conf.bak 2>/dev/null || true
-    sudo sed -i 's/^\s*#\?\s*security_driver\s*=\s*.*/security_driver = "none"/g' /etc/libvirt/qemu.conf
-    if ! grep -q '^\s*security_driver\s*=\s*"none"' /etc/libvirt/qemu.conf; then
+    sudo sed -i 's/^\\s*#\\?\\s*security_driver\\s*=\\s*.*/security_driver = "none"/g' /etc/libvirt/qemu.conf
+    if ! grep -q '^\\s*security_driver\\s*=\\s*"none"' /etc/libvirt/qemu.conf; then
         echo 'security_driver = "none"' | sudo tee -a /etc/libvirt/qemu.conf >/dev/null
     fi
 fi
@@ -816,10 +850,10 @@ echo "[LIBVIRT SETUP] Complete"
         Path(setup_script_local).chmod(0o755)
         
         # Copy and execute setup script on manager
-        scp_script_cmd = f"sshpass -p '{ssh_password}' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {setup_script_local} {manager_user}@{manager_ip}:/tmp/libvirt-setup.sh"
+        scp_script_cmd = f"{scp_cmd_prefix} {setup_script_local} {manager_user}@{manager_ip}:/tmp/libvirt-setup.sh"
         result = subprocess.run(scp_script_cmd, shell=True, capture_output=True, text=True)
         
-        exec_script_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'bash /tmp/libvirt-setup.sh && sudo systemctl restart libvirtd && sleep 2'"
+        exec_script_cmd = f"{ssh_cmd_prefix} 'bash /tmp/libvirt-setup.sh && sudo systemctl restart libvirtd && sleep 2'"
         result = subprocess.run(exec_script_cmd, shell=True, capture_output=True, text=True)
         if log_callback:
             log_callback(f"[TF] Setup script output:\n{result.stdout}\n")
@@ -834,7 +868,7 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback(f"[TF] Creating remote directory: {remote_tf_dir}\n")
         
-        mkdir_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} mkdir -p {remote_tf_dir}"
+        mkdir_cmd = f"{ssh_cmd_prefix} mkdir -p {remote_tf_dir}"
         result = subprocess.run(mkdir_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             if log_callback:
@@ -845,7 +879,7 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback(f"[TF] Copying Terraform files to manager...\n")
         
-        scp_cmd = f"sshpass -p '{ssh_password}' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r {terraform_dir}/* {manager_user}@{manager_ip}:{remote_tf_dir}/"
+        scp_cmd = f"{scp_cmd_prefix} -r {terraform_dir}/* {manager_user}@{manager_ip}:{remote_tf_dir}/"
         result = subprocess.run(scp_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             if log_callback:
@@ -857,8 +891,7 @@ echo "[LIBVIRT SETUP] Complete"
             use_reef = created_reef_network
             if not use_reef:
                 check_reef_cmd = (
-                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                    f"{manager_user}@{manager_ip} 'sudo virsh -c qemu:///system net-info reef 2>/dev/null | grep -q \"Active:.*yes\"'"
+                    f"{ssh_cmd_prefix} 'sudo virsh -c qemu:///system net-info reef 2>/dev/null | grep -q \"Active:.*yes\"'"
                 )
                 reef_status = subprocess.run(check_reef_cmd, shell=True)
                 use_reef = (reef_status.returncode == 0)
@@ -866,8 +899,7 @@ echo "[LIBVIRT SETUP] Complete"
                 if log_callback:
                     log_callback("[TF] Switching Terraform network to 'reef' (avoid default)\n")
                 replace_net_cmd = (
-                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                    f"{manager_user}@{manager_ip} 'sed -i \"s/network_name\\s*=\\s*\\\"default\\\"/network_name = \\\"reef\\\"/g\" {remote_tf_dir}/main.tf'"
+                    f"{ssh_cmd_prefix} 'sed -i \"s/network_name\\s*=\\s*\\\"default\\\"/network_name = \\\"reef\\\"/g\" {remote_tf_dir}/main.tf'"
                 )
                 _ = subprocess.run(replace_net_cmd, shell=True)
         except Exception:
@@ -877,7 +909,7 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback(f"[TF] Configuring local libvirt connection on manager\n")
         
-        tfvars_update = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'printf \"libvirt_uri = \\\"qemu:///system\\\"\\n\" > {remote_tf_dir}/terraform.tfvars'"
+        tfvars_update = f"{ssh_cmd_prefix} 'printf \"libvirt_uri = \\\"qemu:///system\\\"\\n\" > {remote_tf_dir}/terraform.tfvars'"
         result = subprocess.run(tfvars_update, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             if log_callback:
@@ -894,8 +926,7 @@ echo "[LIBVIRT SETUP] Complete"
             log_callback("[TF] Final network verification before Terraform...\n")
         
         detailed_net_check = (
-            f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            f"{manager_user}@{manager_ip} 'sudo virsh -c qemu:///system net-info default 2>&1 || true; echo \"---\"; "
+            f"{ssh_cmd_prefix} 'sudo virsh -c qemu:///system net-info default 2>&1 || true; echo \"---\"; "
             f"sudo virsh -c qemu:///system net-info reef 2>&1 || true; echo \"---\"; sudo virsh -c qemu:///system net-list --all; echo \"---\"; "
             f"ip addr show virbr0 2>&1 || echo \"virbr0 not found\"; ip addr show virbr1 2>&1 || echo \"virbr1 not found\"'"
         )
@@ -909,7 +940,7 @@ echo "[LIBVIRT SETUP] Complete"
                 log_callback("[TF] Network is inactive, attempting to force activation...\n")
             
             # Force network activation: restart libvirtd and try to start network again
-            force_activation_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo systemctl restart libvirtd && sleep 3 && sudo virsh -c qemu:///system net-start default 2>&1 || echo \"START_FAILED\" && sleep 2 && sudo virsh -c qemu:///system net-info default 2>&1'"
+            force_activation_cmd = f"{ssh_cmd_prefix} 'sudo systemctl restart libvirtd && sleep 3 && sudo virsh -c qemu:///system net-start default 2>&1 || echo \"START_FAILED\" && sleep 2 && sudo virsh -c qemu:///system net-info default 2>&1'"
             result = subprocess.run(force_activation_cmd, shell=True, capture_output=True, text=True)
             if log_callback:
                 log_callback(f"[TF] Force activation result:\n{result.stdout}\n")
@@ -932,7 +963,7 @@ echo "[LIBVIRT SETUP] Complete"
                 vm_resources = re.findall(r'resource\s+"libvirt_domain"\s+"([^"]+)"', main_tf_content)
                 
                 for vm_name in vm_resources:
-                    cleanup_vm_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sudo virsh -c qemu:///system destroy {vm_name} 2>/dev/null || true; sudo virsh -c qemu:///system undefine {vm_name} --remove-all-storage 2>/dev/null || true'"
+                    cleanup_vm_cmd = f"{ssh_cmd_prefix} 'sudo virsh -c qemu:///system destroy {vm_name} 2>/dev/null || true; sudo virsh -c qemu:///system undefine {vm_name} --remove-all-storage 2>/dev/null || true'"
                     result = subprocess.run(cleanup_vm_cmd, shell=True, capture_output=True, text=True)
                     if log_callback:
                         log_callback(f"[TF] Cleaned up VM {vm_name}\n")
@@ -944,7 +975,7 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback("[TF] Running: terraform init (on manager)\n")
         
-        init_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform init'"
+        init_cmd = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform init'"
         result = subprocess.run(init_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             if log_callback:
@@ -955,14 +986,13 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback("[TF] Running: terraform plan (on manager)\n")
         
-        plan_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+        plan_cmd = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
         result = subprocess.run(plan_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             # Detect concurrent terraform process to avoid unsafe unlocks
             try:
                 check_proc_cmd = (
-                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                    f"{manager_user}@{manager_ip} 'pgrep -a terraform || true'"
+                    f"{ssh_cmd_prefix} 'pgrep -a terraform || true'"
                 )
                 proc_check = subprocess.run(check_proc_cmd, shell=True, capture_output=True, text=True)
                 if proc_check.stdout.strip():
@@ -989,14 +1019,12 @@ echo "[LIBVIRT SETUP] Complete"
                 # Prefer using force-unlock; fall back to removing local lock info file if present
                 if lock_id:
                     unlock_cmd = (
-                        f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                        f"{manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform force-unlock {lock_id}'"
+                        f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform force-unlock {lock_id}'"
                     )
                     _ = subprocess.run(unlock_cmd, shell=True, capture_output=True, text=True)
                 # Clean up lock info file if it exists (local backend)
                 cleanup_lock_cmd = (
-                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                    f"{manager_user}@{manager_ip} 'cd {remote_tf_dir} && rm -f .terraform.tfstate.lock.info'"
+                    f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && rm -f .terraform.tfstate.lock.info'"
                 )
                 _ = subprocess.run(cleanup_lock_cmd, shell=True, capture_output=True, text=True)
 
@@ -1017,7 +1045,7 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback("[TF] Running: terraform apply (on manager)\n")
         
-        apply_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+        apply_cmd = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
         result = subprocess.run(apply_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             apply_out = (result.stdout or "") + "\n" + (result.stderr or "")
@@ -1031,18 +1059,17 @@ echo "[LIBVIRT SETUP] Complete"
                         log_callback(f"[TF] Low memory detected. Retrying with memory={new_mem} MB...\n")
                     # Reduce memory for all domains in main.tf
                     sed_cmd = (
-                        f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                        f"{manager_user}@{manager_ip} 'sed -ri \"s/^[[:space:]]*memory[[:space:]]*=[[:space:]]*[0-9]+/  memory    = {new_mem}/g\" {remote_tf_dir}/main.tf'"
+                        f"{ssh_cmd_prefix} 'sed -ri \"s/^[[:space:]]*memory[[:space:]]*=[[:space:]]*[0-9]+/  memory    = {new_mem}/g\" {remote_tf_dir}/main.tf'"
                     )
                     _ = subprocess.run(sed_cmd, shell=True)
                     # Re-plan and apply
-                    plan_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+                    plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
                     result_plan = subprocess.run(plan_cmd_retry, shell=True, capture_output=True, text=True)
                     if result_plan.returncode != 0:
                         if log_callback:
                             log_callback(f"[TF] Retry plan failed: {result_plan.stderr}\n")
                         continue
-                    apply_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+                    apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
                     result_apply = subprocess.run(apply_cmd_retry, shell=True, capture_output=True, text=True)
                     if result_apply.returncode == 0:
                         if log_callback:
@@ -1068,24 +1095,22 @@ echo "[LIBVIRT SETUP] Complete"
                     log_callback("[TF] Guest agent not ready; using DHCP lease and disabling qemu_agent...\n")
                 # Ensure we do not rely on guest agent for IP retrieval
                 disable_agent_cmd = (
-                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                    f"{manager_user}@{manager_ip} 'sed -ri \"s/^[[:space:]]*qemu_agent[[:space:]]*=[[:space:]]*true/  qemu_agent  = false/g\" {remote_tf_dir}/main.tf'"
+                    f"{ssh_cmd_prefix} 'sed -ri \"s/^[[:space:]]*qemu_agent[[:space:]]*=[[:space:]]*true/  qemu_agent  = false/g\" {remote_tf_dir}/main.tf'"
                 )
                 _ = subprocess.run(disable_agent_cmd, shell=True)
                 enable_wait_cmd = (
-                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                    f"{manager_user}@{manager_ip} 'sed -ri \"s/^[[:space:]]*wait_for_lease[[:space:]]*=[[:space:]]*false/  wait_for_lease = true/g\" {remote_tf_dir}/main.tf'"
+                    f"{ssh_cmd_prefix} 'sed -ri \"s/^[[:space:]]*wait_for_lease[[:space:]]*=[[:space:]]*false/  wait_for_lease = true/g\" {remote_tf_dir}/main.tf'"
                 )
                 _ = subprocess.run(enable_wait_cmd, shell=True)
-                wait_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sleep 10'"
+                wait_cmd = f"{ssh_cmd_prefix} 'sleep 10'"
                 _ = subprocess.run(wait_cmd, shell=True)
-                plan_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+                plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
                 result_plan = subprocess.run(plan_cmd_retry, shell=True, capture_output=True, text=True)
                 if result_plan.returncode != 0:
                     if log_callback:
                         log_callback(f"[TF] Plan retry failed after disabling agent and enabling lease wait: {result_plan.stderr}\n")
                     return {'success': False, 'message': f"terraform plan failed after disabling agent and enabling lease-wait: {result_plan.stderr}"}
-                apply_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+                apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
                 result_apply = subprocess.run(apply_cmd_retry, shell=True, capture_output=True, text=True)
                 if result_apply.returncode == 0:
                     if log_callback:
@@ -1103,19 +1128,18 @@ echo "[LIBVIRT SETUP] Complete"
                 if log_callback:
                     log_callback("[TF] Lease timeout; disabling wait_for_lease and retrying...\n")
                 disable_wait_cmd = (
-                    f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                    f"{manager_user}@{manager_ip} 'sed -ri \"s/^[[:space:]]*wait_for_lease[[:space:]]*=[[:space:]]*true/  wait_for_lease = false/g\" {remote_tf_dir}/main.tf'"
+                    f"{ssh_cmd_prefix} 'sed -ri \"s/^[[:space:]]*wait_for_lease[[:space:]]*=[[:space:]]*true/  wait_for_lease = false/g\" {remote_tf_dir}/main.tf'"
                 )
                 _ = subprocess.run(disable_wait_cmd, shell=True)
-                wait_cmd = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'sleep 5'"
+                wait_cmd = f"{ssh_cmd_prefix} 'sleep 5'"
                 _ = subprocess.run(wait_cmd, shell=True)
-                plan_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+                plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
                 result_plan = subprocess.run(plan_cmd_retry, shell=True, capture_output=True, text=True)
                 if result_plan.returncode != 0:
                     if log_callback:
                         log_callback(f"[TF] Plan retry failed after disabling lease wait: {result_plan.stderr}\n")
                     return {'success': False, 'message': f"terraform plan failed after lease-wait disable: {result_plan.stderr}"}
-                apply_cmd_retry = f"sshpass -p '{ssh_password}' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {manager_user}@{manager_ip} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+                apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
                 result_apply = subprocess.run(apply_cmd_retry, shell=True, capture_output=True, text=True)
                 if result_apply.returncode == 0:
                     if log_callback:

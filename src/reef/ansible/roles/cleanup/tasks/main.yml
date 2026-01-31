@@ -143,11 +143,12 @@
     - /usr/share/keyrings/wazuh.gpg
     - /etc/apt/sources.list.d/grafana.list
 
-
 - name: Remove temporary installation files
   file:
     path: /tmp/wazuh-install-files.tar
     state: absent
+
+
 
 # - name: Remove common dependencies (experimental cleanup)
 #   apt:
@@ -165,3 +166,11 @@
 #   apt:
 #     autoremove: yes
 #     autoclean: yes
+
+- name: Remove Wazuh admin password file from controller
+  file:
+    path: "{{ playbook_dir }}/../inventory/wazuh-admin-password.txt"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  become: false
