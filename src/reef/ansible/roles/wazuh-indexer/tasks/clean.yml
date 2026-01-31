@@ -30,3 +30,11 @@
     - /var/log/wazuh-indexer
     - /usr/share/wazuh-indexer
   become: true
+
+- name: Remove Wazuh admin password file from controller
+  file:
+    path: "{{ playbook_dir }}/../inventory/wazuh-admin-password.txt"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  become: false

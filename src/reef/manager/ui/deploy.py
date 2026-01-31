@@ -2,8 +2,34 @@ from nicegui import ui
 import os
 import asyncio
 from pathlib import Path
-from reef.manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, load_current_config, update_yaml_config_from_schema
+from reef.manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, load_current_config, update_yaml_config_from_schema, create_vm, generate_terraform_vm_config, run_terraform_apply, get_manager_credentials_from_inventory
 from reef.manager.ui_utils import page_header, card_style, async_run_command, async_run_ansible_playbook, app_state
+
+# Setup persistent logging
+import logging
+
+deploy_logger = logging.getLogger('reef_deploy')
+deploy_logger.setLevel(logging.INFO)
+# Prevent adding handlers multiple times if module is reloaded
+if not deploy_logger.handlers:
+    # File handler
+    fh = logging.FileHandler('reef_deploy.log', mode='w')
+    fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    deploy_logger.addHandler(fh)
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter('DEPLOY: %(message)s'))
+    deploy_logger.addHandler(ch)
+
+# Global variable for the log element
+deploy_log = None
+
+def deploy_log_push(msg):
+    """Push message to UI log and persistent logger"""
+    if deploy_log:
+        deploy_log.push(msg)
+    # Strip newline for logger as it adds its own
+    deploy_logger.info(msg.rstrip())
 
 def show_deploy():
     page_header("Installation & Management", "Install, update, or remove security software")
@@ -57,24 +83,24 @@ def show_deploy():
                                 # Indexer ON -> Server ON
                                 if 'wazuh-server' in role_checkboxes and not role_checkboxes['wazuh-server'].value:
                                     role_checkboxes['wazuh-server'].value = True
-                                    ui.notify('Auto-selected Wazuh Server (coupled with Indexer)', type='positive')
+                                    # ui.notify('Auto-selected Wazuh Server (coupled with Indexer)', type='positive')
                             else:
                                 # Indexer OFF -> Server OFF
                                 if 'wazuh-server' in role_checkboxes and role_checkboxes['wazuh-server'].value:
                                     role_checkboxes['wazuh-server'].value = False
-                                    ui.notify('Auto-deselected Wazuh Server (coupled with Indexer)', type='warning')
+                                    # ui.notify('Auto-deselected Wazuh Server (coupled with Indexer)', type='warning')
 
                         if role_name == 'wazuh-server':
                             if value:
                                 # Server ON -> Indexer ON
                                 if 'wazuh-indexer' in role_checkboxes and not role_checkboxes['wazuh-indexer'].value:
                                     role_checkboxes['wazuh-indexer'].value = True
-                                    ui.notify('Auto-selected Wazuh Indexer (coupled with Server)', type='positive')
+                                    # ui.notify('Auto-selected Wazuh Indexer (coupled with Server)', type='positive')
                             else:
                                 # Server OFF -> Indexer OFF
                                 if 'wazuh-indexer' in role_checkboxes and role_checkboxes['wazuh-indexer'].value:
                                     role_checkboxes['wazuh-indexer'].value = False
-                                    ui.notify('Auto-deselected Wazuh Indexer (coupled with Server)', type='warning')
+                                    # ui.notify('Auto-deselected Wazuh Indexer (coupled with Server)', type='warning')
 
                     with ui.grid(columns=2).classes('w-full gap-4'):
                         for role in all_roles:
@@ -106,6 +132,38 @@ def show_deploy():
                                 ui.notify("Selection saved!", type='positive')
                             
                     ui.button("Save Role Selection", on_click=save_roles).classes('mt-4 bg-slate-700')
+
+                    # --- Create VM option inside Enabled Components ---
+                    create_vm_checkbox = ui.checkbox('Create VM for this deployment', value=False).classes('text-slate-300 mt-4')
+
+                # VM Deployment (appears when Create VM is checked)
+                with ui.column().classes(card_style() + ' w-full').bind_visibility_from(create_vm_checkbox, 'value', value=True):
+                    ui.label("VM Deployment").classes('text-xl font-bold text-slate-200 mb-4')
+
+                    vm_count = ui.select([1,2,3,4,5], value=1, label='Number of VMs').classes('w-36 text-slate-300')
+                    vm_deploy_container = ui.column().classes('w-full gap-4 mt-2')
+                    vm_entries = []
+
+                    def rebuild_vm_entries(*_args):
+                        vm_deploy_container.clear()
+                        vm_entries.clear()
+                        try:
+                            n = int(vm_count.value)
+                        except Exception:
+                            n = 1
+                        for i in range(n):
+                            with vm_deploy_container:
+                                with ui.column().classes('bg-slate-800/30 p-4 rounded-lg border border-white/5 gap-2'):
+                                    ui.label(f'VM #{i+1}').classes('font-bold text-slate-200')
+                                    type_sel = ui.select(['ubuntu-22.04', 'debian-11'], value='ubuntu-22.04').classes('w-full text-slate-300')
+                                    name_in = ui.input(label='VM Name', placeholder=f'vm-{i+1}').classes('w-full text-slate-300')
+                                    ssh_pw = ui.input(label='SSH Password', password=True).classes('w-full text-slate-300')
+                            vm_entries.append({'type': type_sel, 'name': name_in, 'ssh_password': ssh_pw})
+
+                    vm_count.on('update:model-value', lambda *_: rebuild_vm_entries())
+                    rebuild_vm_entries()
+
+                    # (Creation will run during deployment when Start Deployment is clicked)
 
                 # Target Selection
                 with ui.column().classes(card_style() + ' w-full'):
@@ -143,88 +201,208 @@ def show_deploy():
                     agent_select = ui.select(agent_options, label="Select Computer").classes('w-full text-slate-300')
                     agent_select.bind_visibility_from(target_scope, 'value', value='Specific Computer')
 
+                async def run_deployment():
+                    # Auto-save current selection before deploying
+                    save_roles(notify=False)
+                    
+                    deploy_log.clear()
+                    credentials_container.classes(add='hidden')
+                    credentials_container.clear()
+                    results_container.clear()
+                    
+                    # If requested, create VMs first using Terraform
+                    created_vms = []
+                    if create_vm_checkbox.value and vm_entries:
+                        ui.notify('Generating Terraform configuration for VMs...', type='info')
+                        deploy_log_push("[VM] Preparing Terraform configuration...\n")
+                        
+                        # Build VM specs from UI entries
+                        vm_specs = []
+                        for idx, entry in enumerate(vm_entries, start=1):
+                            name = entry['name'].value or f"vm-{idx}"
+                            ssh_pw = entry.get('ssh_password').value if entry.get('ssh_password') else 'ubuntu'
+                            os_choice = entry.get('type').value if entry.get('type') else 'ubuntu-22.04'
+                            
+                            vm_specs.append({
+                                'name': name,
+                                'ssh_password': ssh_pw,
+                                'os': os_choice
+                            })
+                            deploy_log_push(f"[VM#{idx}] Spec: name={name}, os={os_choice}\n")
+                        
+                        # Get Manager credentials from hosts.ini
+                        manager_ip, manager_ssh_user, manager_ssh_password, manager_ssh_key = await asyncio.to_thread(get_manager_credentials_from_inventory)
+                        
+                        if not manager_ip or (not manager_ssh_password and not manager_ssh_key):
+                            deploy_log_push("[ERROR] Manager credentials not found in hosts.ini. Please run 'UPDATE INVENTORY (HOSTS.INI)' in Configuration tab first.\n")
+                            return
+                        
+                        gen_result = await asyncio.to_thread(generate_terraform_vm_config, vm_specs, manager_ip, manager_ssh_user, manager_ssh_password, manager_ssh_key)
+                        if gen_result.get('success'):
+                            deploy_log_push(f"[VM] {gen_result.get('message')}\n")
+                            
+                            # Run Terraform apply on manager (via SSH)
+                            deploy_log_push("[TF] Starting Terraform apply on manager...\n")
+                            tf_result = await asyncio.to_thread(
+                                run_terraform_apply,
+                                gen_result.get('terraform_dir'),
+                                deploy_log_push,  # Use wrapper for file/stdout logging
+                                gen_result.get('manager_ssh_password'),  # SSH password (from gen_result or original)
+                                gen_result.get('manager_ip'),  # Manager IP
+                                gen_result.get('manager_ssh_user'),  # Manager SSH user
+                                manager_ssh_key # SSH key (passed directly)
+                            )
+                            
+                            if tf_result.get('success'):
+                                deploy_log_push(f"[TF] {tf_result.get('message')}\n")
+                            
+                            # Parse and display VM IPs
+                            tf_output = tf_result.get('output', '')
+                            import re
+                            ip_matches = re.findall(r'(\S+)_ip\s*=\s*"([^"]+)"', tf_output)
+                            
+                            if ip_matches:
+                                deploy_log_push("\n[VM ACCESS DETAILS]\n")
+                                deploy_log_push(f"{'VM Name':<20} {'IP Address':<18} {'User':<12} {'Password'}\n")
+                                deploy_log_push("-" * 65 + "\n")
+                                for vm_key, vm_ip in ip_matches:
+                                     # vm_key is like "vm-1_ip"
+                                     clean_name = vm_key.replace('_ip', '')
+                                     # Derived user logic (replicated from core.py to report correctly)
+                                     user_name = re.sub(r'[^a-z0-9-]', '', clean_name.lower()) or 'ubuntu'
+                                     deploy_log_push(f"{clean_name:<20} {vm_ip:<18} {user_name:<12} ubuntu\n")
+                                deploy_log_push("-" * 65 + "\n")
+                                deploy_log_push("SSH Command (copy-paste):\n")
+                                # Show the exact command that worked for the user now
+                                example_name = ip_matches[0][0].replace('_ip', '')
+                                example_user = re.sub(r'[^a-z0-9-]', '', example_name.lower()) or 'ubuntu'
+                                example_ip = ip_matches[0][1]
+                                cmd_str = f'ssh -o ProxyCommand="ssh -W %h:%p -i {manager_ssh_key or "~/.ssh/id_rsa"} {manager_ssh_user}@{manager_ip}" {example_user}@{example_ip}'
+                                deploy_log_push(f"{cmd_str}\n\n")
+
+                                created_vms = gen_result.get('vms', [])
+                                ui.notify('VMs created successfully!', type='positive')
+                            else:
+                                deploy_log_push(f"[TF] ERROR: {tf_result.get('message')}\n")
+                                ui.notify(f"VM creation failed: {tf_result.get('message')}", type='negative')
+                        else:
+                            deploy_log_push(f"[VM] ERROR: {gen_result.get('message')}\n")
+                            ui.notify(f"Failed to generate Terraform config: {gen_result.get('message')}", type='negative')
+
+                    playbook = ANSIBLE_DIR / "playbooks" / "experimental.yml"
+                    inventory = HOSTS_INI_FILE
+                    
+                    # Determine limit
+                    limit_arg = ""
+                    scope = target_scope.value
+                    if scope == 'Security Server Only':
+                        limit_arg = "-l security_server"
+                    elif scope == 'Specific Computer':
+                        if agent_select.value:
+                            limit_arg = f"-l {agent_select.value}"
+                        else:
+                            ui.notify("Please select an agent", type='warning')
+                            btn_deploy.enable()
+                            return
+
+                    cmd = f"ansible-playbook {playbook} -i {inventory} {limit_arg}"
+                    
+                    ret_code, full_output, task_results = await async_run_ansible_playbook(cmd, deploy_log)
+                    
+                    # Render Results Table
+                    if task_results:
+                         with results_container:
+                            ui.label("Installation Progress").classes('text-lg font-bold text-slate-200 mb-2')
+                            
+                            cols = [
+                                {'name': 'host', 'label': 'Computer', 'field': 'host', 'align': 'left'},
+                                {'name': 'task', 'label': 'Action', 'field': 'task', 'align': 'left'},
+                                {'name': 'status', 'label': 'Result', 'field': 'status', 'align': 'left'},
+                            ]
+                            
+                            table = ui.table(columns=cols, rows=task_results, row_key='task').classes('w-full')
+                            table.add_slot('body-cell-status', '''
+                                <q-td :props="props">
+                                    <q-badge :color="props.value === 'ok' ? 'green' : (props.value === 'changed' ? 'amber' : 'red')" text-color="black">
+                                        {{ props.value }}
+                                    </q-badge>
+                                </q-td>
+                            ''')
+
+                    if ret_code == 0:
+                         check_credentials(full_output)
+
                 # Deployment Action
                 with ui.column().classes(card_style() + ' w-full'):
                     with ui.row().classes('w-full gap-4'):
-                        btn_deploy = ui.button("Deploy", on_click=lambda: run_deployment()).classes('bg-indigo-600 flex-grow py-4 text-lg')
+                        btn_deploy = ui.button("Deploy", on_click=run_deployment).classes('bg-indigo-600 flex-grow py-4 text-lg')
                         btn_stop_deploy = ui.button("Stop", on_click=app_state.cancel_process).classes('bg-red-900 w-1/6 py-4 text-lg')
                         
                         btn_deploy.bind_enabled_from(app_state, 'running_process', backward=lambda x: x is None)
                         btn_stop_deploy.bind_enabled_from(app_state, 'running_process', backward=lambda x: x is not None)
 
                     credentials_container = ui.column().classes('w-full mt-4 hidden')
+                    global deploy_log
                     deploy_log = ui.log().classes('w-full h-64 bg-slate-900 font-mono text-xs p-4 rounded-xl border border-white/10 mt-4')
 
                     results_container = ui.column().classes('w-full mt-4')
 
-            async def run_deployment():
-                # Auto-save current selection before deploying
-                save_roles(notify=False)
-                
-                deploy_log.clear()
-                credentials_container.classes(add='hidden')
-                credentials_container.clear()
-                results_container.clear()
-                
 
-                
-                playbook = ANSIBLE_DIR / "playbooks" / "experimental.yml"
-                inventory = HOSTS_INI_FILE
-                
-                # Determine limit
-                limit_arg = ""
-                scope = target_scope.value
-                if scope == 'Security Server Only':
-                    limit_arg = "-l security_server"
-                elif scope == 'Specific Computer':
-                    if agent_select.value:
-                        limit_arg = f"-l {agent_select.value}"
+            async def create_vm_handler():
+                # Simple handler that calls the core.create_vm stub and reports results
+                # Backwards-compatible single-create (if legacy controls exist)
+                try:
+                    name = vm_name.value or f"vm-{os.getpid()}"
+                    image = vm_image.value
+                    size = vm_size.value
+                except Exception:
+                    ui.notify("No VM fields available for single-create", type='warning')
+                    return
+
+                deploy_log_push(f"[VM] Creating VM: name={name}, image={image}, size={size}\n")
+                result = await asyncio.to_thread(create_vm, name, image, size)
+
+                if result.get('success'):
+                    ui.notify(f"VM '{result.get('name')}' created ({result.get('ip')})", type='positive')
+                    deploy_log_push(f"[VM] Success: {result.get('message')} ip={result.get('ip')}\n")
+                    with results_container:
+                        ui.label(f"VM Created: {result.get('name')} ({result.get('ip')})").classes('text-slate-300')
+                else:
+                    ui.notify(f"VM creation failed: {result.get('message')}", type='negative')
+                    deploy_log_push(f"[VM] Error: {result.get('message')}\n")
+
+            async def create_vm_handler_multiple():
+                # Create all VMs defined in vm_entries
+                if not vm_entries:
+                    ui.notify('No VM entries defined', type='warning')
+                    return
+
+                for idx, entry in enumerate(vm_entries, start=1):
+                    name = entry['name'].value or f"vm-{idx}-{os.getpid()}"
+                    image = entry['type'].value
+                    # we don't use size here; default to 'small'
+                    deploy_log_push(f"[VM#{idx}] Creating: name={name}, image={image}\n")
+                    result = await asyncio.to_thread(create_vm, name, image, 'small')
+                    if result.get('success'):
+                        ui.notify(f"VM '{result.get('name')}' created ({result.get('ip')})", type='positive')
+                        deploy_log_push(f"[VM#{idx}] Success: {result.get('message')} ip={result.get('ip')}\n")
+                        with results_container:
+                            ui.label(f"VM Created: {result.get('name')} ({result.get('ip')})").classes('text-slate-300')
                     else:
-                        ui.notify("Please select an agent", type='warning')
-                        btn_deploy.enable()
-                        return
-
-                cmd = f"ansible-playbook {playbook} -i {inventory} {limit_arg}"
-                
-                ret_code, full_output, task_results = await async_run_ansible_playbook(cmd, deploy_log)
-
-                # Render Results Table
-                if task_results:
-                     with results_container:
-                        ui.label("Installation Progress").classes('text-lg font-bold text-slate-200 mb-2')
-                        
-                        cols = [
-                            {'name': 'host', 'label': 'Computer', 'field': 'host', 'align': 'left'},
-                            {'name': 'task', 'label': 'Action', 'field': 'task', 'align': 'left'},
-                            {'name': 'status', 'label': 'Result', 'field': 'status', 'align': 'left'},
-                        ]
-                        
-                        table = ui.table(columns=cols, rows=task_results, row_key='task').classes('w-full')
-                        table.add_slot('body-cell-status', '''
-                            <q-td :props="props">
-                                <q-badge :color="props.value === 'ok' ? 'green' : (props.value === 'changed' ? 'amber' : 'red')" text-color="black">
-                                    {{ props.value }}
-                                </q-badge>
-                            </q-td>
-                        ''')
-
-                if ret_code == 0:
-                     check_credentials(full_output)
-
+                        ui.notify(f"VM #{idx} creation failed: {result.get('message')}", type='negative')
+                        deploy_log_push(f"[VM#{idx}] Error: {result.get('message')}\n")
             def check_credentials(output):
                 # Attempt to retrieve credentials
+                pass_file = ANSIBLE_DIR / 'inventory' / 'wazuh-admin-password.txt'
+
+                # Only show success message if the password file exists (indicates deployment, not cleanup)
+                if not pass_file.exists():
+                    return
+
                 config = load_current_config()
                 manager_ip = config.get('wazuh_manager_ip', '<manager_ip>')
                 
-                password = None
-                pass_file = ANSIBLE_DIR / 'inventory' / 'wazuh-admin-password.txt'
-                
-                import re
-                match = re.search(r'"admin",\s+"([^"]+)"', output)
-                if match:
-                    password = match.group(1)
-                elif pass_file.exists():
-                     password = pass_file.read_text().strip().splitlines()[0] if pass_file.read_text().strip() else None
+                password = pass_file.read_text().strip().splitlines()[0] if pass_file.read_text().strip() else None
                 
                 # Only show if retrieved
                 if password:
