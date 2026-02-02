@@ -44,7 +44,7 @@ def page_header(title: str, subtitle: str = None):
     ui.separator().classes('mb-6 bg-slate-700')
 
 def card_style():
-    return 'p-6 rounded-2xl bg-white/5 border border-white/10 shadow-lg backdrop-blur-md transition-all hover:-translate-y-1 hover:shadow-2xl'
+    return 'p-6 rounded-2xl bg-slate-800 border border-white/5 shadow-lg'
 
 def _get_ansible_env():
     env = os.environ.copy()

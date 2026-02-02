@@ -160,3 +160,9 @@ context/
 .DS_Store
 TODO.md
 steps.txt
+
+terraform
+terraform/
+/src/terraform
+terraform.tfvars    
+terraform.tfvars.example

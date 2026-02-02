@@ -3,6 +3,24 @@
   shell: |
     timedatectl set-ntp on || true
     systemctl restart systemd-timesyncd || true
+    systemctl restart systemd-timesyncd || true
+    systemctl restart systemd-timesyncd || true
+  become: true
+  ignore_errors: yes
+  changed_when: false
+
+- name: Remove wazuh-manager if corrupt (reinstreq)
+  shell: |
+    if dpkg -s wazuh-manager 2>/dev/null | grep -q "reinstreq"; then
+      dpkg --remove --force-remove-reinstreq wazuh-manager
+    fi
+  become: true
+  changed_when: false
+
+- name: Attempt to fix broken apt/dpkg state
+  shell: |
+    dpkg --configure -a
+    apt-get install -f -y
   become: true
   ignore_errors: yes
   changed_when: false

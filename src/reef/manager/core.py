@@ -220,11 +220,7 @@ def update_yaml_config_from_schema(config_data):
 
         # Update values
         for key, value in config_data.items():
-            # Special handling for ansible_ssh_private_key_file: don't write empty
-            if key == 'ansible_ssh_private_key_file' and not value:
-                if key in data:
-                    del data[key]
-                continue
+
                 
             data[key] = value
 
@@ -242,17 +238,16 @@ import configparser
 def update_ini_inventory(manager_ip, manager_user, manager_password, manager_key, agents_data):
     """Update ansible/inventory/hosts.ini using configparser with space delimiter."""
     # Use space as delimiter so "ip vars" is parsed as Key: "ip", Value: "vars"
-    config = configparser.ConfigParser(delimiters=(' '), allow_no_value=True)
+    config = configparser.ConfigParser(delimiters=(' '), allow_no_value=True, interpolation=None)
     
     # We will build exactly what we need.
+    # Security Server Section
     config.add_section('security_server')
     
     manager_entry_values = []
     if manager_user:
         manager_entry_values.append(f"ansible_user={manager_user}")
     else:
-        # If no user specified, defaults might be used, but for clarity let's set root or nothing
-        # The original code set root.
         manager_entry_values.append("ansible_user=root")
         
     if manager_password:
@@ -265,16 +260,27 @@ def update_ini_inventory(manager_ip, manager_user, manager_password, manager_key
     val_str = " ".join(manager_entry_values)
     config.set('security_server', manager_ip, val_str)
 
+    # Agents Section
     config.add_section('agents')
     for agent in agents_data:
         agent_values = []
-        if agent['user']:
+        if agent.get('user'):
             agent_values.append(f"ansible_user={agent['user']}")
-        if agent['password']:
+        if agent.get('password'):
             agent_values.append(f"ansible_password={agent['password']}")
             agent_values.append(f"ansible_become_password={agent['password']}")
         if agent.get('key'):
              agent_values.append(f"ansible_ssh_private_key_file={agent['key']}")
+        
+        # Add support for extra variables (e.g. type=vm, hypervisor=...)
+        for k, v in agent.items():
+            if k not in ['ip', 'user', 'password', 'key'] and v:
+                # Quote value if it contains spaces
+                val_str = str(v)
+                if " " in val_str or "=" in val_str or '"' in val_str:
+                     agent_values.append(f"{k}='{val_str}'")
+                else:
+                    agent_values.append(f"{k}={val_str}")
         
         val_str = " ".join(agent_values) if agent_values else None
         config.set('agents', agent['ip'], val_str)
@@ -302,7 +308,7 @@ def get_inventory_hosts():
         return []
 
     # Use space delimiter
-    config = configparser.ConfigParser(delimiters=(' '), allow_no_value=True)
+    config = configparser.ConfigParser(delimiters=(' '), allow_no_value=True, interpolation=None)
     hosts = []
     
     try:
@@ -320,22 +326,25 @@ def get_inventory_hosts():
                 user = "root"
                 key = ""
                 password = ""
+                extra_vars = {}
                 
                 if vars_str:
-                    match_user = re.search(r'ansible_user=(\S+)', vars_str)
-                    if match_user:
-                        user = match_user.group(1)
-                    
-                    match_key = re.search(r'ansible_ssh_private_key_file=(\S+)', vars_str)
-                    if match_key:
-                        key = match_key.group(1)
-
-                    match_pass = re.search(r'ansible_password=(\S+)', vars_str)
-                    if match_pass:
-                        password = match_pass.group(1)
-
+                    parts = vars_str.split()
+                    for part in parts:
+                        if part.startswith('ansible_user='):
+                            user = part.split('=', 1)[1]
+                        elif part.startswith('ansible_ssh_private_key_file='):
+                            key = part.split('=', 1)[1]
+                        elif part.startswith('ansible_password='):
+                            password = part.split('=', 1)[1]
+                        elif '=' in part:
+                            # Capture other variables like type=vm, hypervisor=...
+                            k, v = part.split('=', 1)
+                            extra_vars[k] = v
                 
-                hosts.append({'ip': ip, 'user': user, 'key': key, 'password': password})
+                host_data = {'ip': ip, 'user': user, 'key': key, 'password': password}
+                host_data.update(extra_vars)
+                hosts.append(host_data)
 
         parse_section('security_server')
         parse_section('agents')
@@ -453,7 +462,8 @@ resource "libvirt_volume" "{vm_name}_disk" {{
   pool           = "default"
   base_volume_id = libvirt_volume.ubuntu_base.id
   format         = "qcow2"
-}}
+  size           = 17179869184   #16gb space
+}} 
 
 # Cloud-init pour VM: {vm_name}
 resource "libvirt_cloudinit_disk" "{vm_name}_init" {{
@@ -473,7 +483,7 @@ resource "libvirt_cloudinit_disk" "{vm_name}_init" {{
 # VM: {vm_name}
 resource "libvirt_domain" "{vm_name}" {{
   name      = "{vm_name}"
-    memory    = 512
+    memory    = 2048
   vcpu      = 1
   machine   = "pc"
   arch      = "x86_64"
@@ -986,7 +996,7 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback("[TF] Running: terraform plan (on manager)\n")
         
-        plan_cmd = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+        plan_cmd = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -no-color -out=tfplan'"
         result = subprocess.run(plan_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             # Detect concurrent terraform process to avoid unsafe unlocks
@@ -1045,7 +1055,7 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback("[TF] Running: terraform apply (on manager)\n")
         
-        apply_cmd = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+        apply_cmd = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -no-color -auto-approve tfplan'"
         result = subprocess.run(apply_cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             apply_out = (result.stdout or "") + "\n" + (result.stderr or "")
@@ -1063,13 +1073,13 @@ echo "[LIBVIRT SETUP] Complete"
                     )
                     _ = subprocess.run(sed_cmd, shell=True)
                     # Re-plan and apply
-                    plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+                    plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -no-color -out=tfplan'"
                     result_plan = subprocess.run(plan_cmd_retry, shell=True, capture_output=True, text=True)
                     if result_plan.returncode != 0:
                         if log_callback:
                             log_callback(f"[TF] Retry plan failed: {result_plan.stderr}\n")
                         continue
-                    apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+                    apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -no-color -auto-approve tfplan'"
                     result_apply = subprocess.run(apply_cmd_retry, shell=True, capture_output=True, text=True)
                     if result_apply.returncode == 0:
                         if log_callback:
@@ -1104,13 +1114,13 @@ echo "[LIBVIRT SETUP] Complete"
                 _ = subprocess.run(enable_wait_cmd, shell=True)
                 wait_cmd = f"{ssh_cmd_prefix} 'sleep 10'"
                 _ = subprocess.run(wait_cmd, shell=True)
-                plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+                plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -no-color -out=tfplan'"
                 result_plan = subprocess.run(plan_cmd_retry, shell=True, capture_output=True, text=True)
                 if result_plan.returncode != 0:
                     if log_callback:
                         log_callback(f"[TF] Plan retry failed after disabling agent and enabling lease wait: {result_plan.stderr}\n")
                     return {'success': False, 'message': f"terraform plan failed after disabling agent and enabling lease-wait: {result_plan.stderr}"}
-                apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+                apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -no-color -auto-approve tfplan'"
                 result_apply = subprocess.run(apply_cmd_retry, shell=True, capture_output=True, text=True)
                 if result_apply.returncode == 0:
                     if log_callback:
@@ -1133,13 +1143,13 @@ echo "[LIBVIRT SETUP] Complete"
                 _ = subprocess.run(disable_wait_cmd, shell=True)
                 wait_cmd = f"{ssh_cmd_prefix} 'sleep 5'"
                 _ = subprocess.run(wait_cmd, shell=True)
-                plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -out=tfplan'"
+                plan_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform plan -no-color -out=tfplan'"
                 result_plan = subprocess.run(plan_cmd_retry, shell=True, capture_output=True, text=True)
                 if result_plan.returncode != 0:
                     if log_callback:
                         log_callback(f"[TF] Plan retry failed after disabling lease wait: {result_plan.stderr}\n")
                     return {'success': False, 'message': f"terraform plan failed after lease-wait disable: {result_plan.stderr}"}
-                apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -auto-approve tfplan'"
+                apply_cmd_retry = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform apply -no-color -auto-approve tfplan'"
                 result_apply = subprocess.run(apply_cmd_retry, shell=True, capture_output=True, text=True)
                 if result_apply.returncode == 0:
                     if log_callback:
@@ -1158,10 +1168,36 @@ echo "[LIBVIRT SETUP] Complete"
         if log_callback:
             log_callback("[TF] Terraform apply completed successfully\n")
         
+        # Poll for IP addresses if not present in immediate output
+        final_output = result.stdout
+        import re
+        if not re.search(r'_ip\s*=\s*"[^"]+"', final_output):
+            if log_callback:
+                log_callback("[TF] IP addresses not yet available. Waiting for guest agent (max 120s)...\n")
+            
+            import time
+            start_time = time.time()
+            while time.time() - start_time < 120:
+                time.sleep(5)
+                refresh_cmd = f"{ssh_cmd_prefix} 'cd {remote_tf_dir} && terraform refresh -no-color && terraform output -no-color'"
+                refresh_res = subprocess.run(refresh_cmd, shell=True, capture_output=True, text=True)
+                
+                if refresh_res.returncode == 0 and re.search(r'_ip\s*=\s*"[^"]+"', refresh_res.stdout):
+                    final_output = refresh_res.stdout
+                    if log_callback:
+                        log_callback(f"[TF] IP addresses acquired.\n")
+                    break
+                
+                if log_callback:
+                     log_callback(".", end="") # Simple Keep-alive
+            else:
+                 if log_callback:
+                     log_callback("\n[TF] Warning: Timed out waiting for IP addresses.\n")
+
         return {
             'success': True,
             'message': 'Terraform apply successful',
-            'output': result.stdout
+            'output': final_output
         }
     except Exception as e:
         console.print(f"[bold red]Error running Terraform:[/bold red] {e}")
@@ -1170,17 +1206,4 @@ echo "[LIBVIRT SETUP] Complete"
         return {'success': False, 'message': str(e)}
 
 
-def create_vm(name, image='ubuntu-22.04', size='small'):
-    """
-    Stub to create a VM for local development/testing.
-    This function currently simulates VM creation and returns a result dict.
-    Replace with real provider integration (libvirt, cloud API, terraform, etc.)
-    when ready.
-    """
-    try:
-        console.print(f"[blue]Simulating VM creation:[/blue] name={name}, image={image}, size={size}")
-        import random
-        ip = f"192.168.122.{random.randint(10,250)}"
-        return {'success': True, 'message': 'VM created (simulated)', 'ip': ip, 'name': name}
-    except Exception as e:
-        return {'success': False, 'message': str(e)}
+

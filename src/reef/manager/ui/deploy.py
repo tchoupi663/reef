@@ -2,7 +2,7 @@ from nicegui import ui
 import os
 import asyncio
 from pathlib import Path
-from reef.manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, load_current_config, update_yaml_config_from_schema, create_vm, generate_terraform_vm_config, run_terraform_apply, get_manager_credentials_from_inventory
+from reef.manager.core import ANSIBLE_DIR, HOSTS_INI_FILE, load_current_config, update_yaml_config_from_schema, generate_terraform_vm_config, run_terraform_apply, get_manager_credentials_from_inventory, get_inventory_hosts, update_ini_inventory
 from reef.manager.ui_utils import page_header, card_style, async_run_command, async_run_ansible_playbook, app_state
 
 # Setup persistent logging
@@ -31,7 +31,7 @@ def deploy_log_push(msg):
     # Strip newline for logger as it adds its own
     deploy_logger.info(msg.rstrip())
 
-def show_deploy():
+def show_deploy(on_navigate_to_config=None):
     page_header("Installation & Management", "Install, update, or remove security software")
     
     with ui.tabs().classes('w-full text-slate-300') as tabs:
@@ -133,71 +133,42 @@ def show_deploy():
                             
                     ui.button("Save Role Selection", on_click=save_roles).classes('mt-4 bg-slate-700')
 
-                    # --- Create VM option inside Enabled Components ---
-                    create_vm_checkbox = ui.checkbox('Create VM for this deployment', value=False).classes('text-slate-300 mt-4')
 
-                # VM Deployment (appears when Create VM is checked)
-                with ui.column().classes(card_style() + ' w-full').bind_visibility_from(create_vm_checkbox, 'value', value=True):
-                    ui.label("VM Deployment").classes('text-xl font-bold text-slate-200 mb-4')
-
-                    vm_count = ui.select([1,2,3,4,5], value=1, label='Number of VMs').classes('w-36 text-slate-300')
-                    vm_deploy_container = ui.column().classes('w-full gap-4 mt-2')
-                    vm_entries = []
-
-                    def rebuild_vm_entries(*_args):
-                        vm_deploy_container.clear()
-                        vm_entries.clear()
-                        try:
-                            n = int(vm_count.value)
-                        except Exception:
-                            n = 1
-                        for i in range(n):
-                            with vm_deploy_container:
-                                with ui.column().classes('bg-slate-800/30 p-4 rounded-lg border border-white/5 gap-2'):
-                                    ui.label(f'VM #{i+1}').classes('font-bold text-slate-200')
-                                    type_sel = ui.select(['ubuntu-22.04', 'debian-11'], value='ubuntu-22.04').classes('w-full text-slate-300')
-                                    name_in = ui.input(label='VM Name', placeholder=f'vm-{i+1}').classes('w-full text-slate-300')
-                                    ssh_pw = ui.input(label='SSH Password', password=True).classes('w-full text-slate-300')
-                            vm_entries.append({'type': type_sel, 'name': name_in, 'ssh_password': ssh_pw})
-
-                    vm_count.on('update:model-value', lambda *_: rebuild_vm_entries())
-                    rebuild_vm_entries()
-
-                    # (Creation will run during deployment when Start Deployment is clicked)
-
-                # Target Selection
+                # Target Systems Card
                 with ui.column().classes(card_style() + ' w-full'):
-                    ui.label("Where to Install").classes('text-xl font-bold text-slate-200 mb-4')
+                    ui.label("Target Systems").classes('text-xl font-bold text-slate-200 mb-4')
                     
+                    # Quick Inventory Preview
+                    hosts = get_inventory_hosts()
+                    if hosts:
+                         ui.label('Your Inventory:').classes('text-slate-400 font-bold text-xs mb-2')
+                         with ui.grid(columns=3).classes('w-full gap-2 mb-4'):
+                             for h in hosts:
+                                 icon_color = 'text-green-400' if h.get('type') == 'vm' else 'text-slate-400'
+                                 icon_name = 'cloud' if h.get('type') == 'vm' else 'computer'
+                                 
+                                 with ui.row().classes('items-center bg-slate-800/50 p-2 rounded gap-2'):
+                                     ui.icon(icon_name).classes(icon_color)
+                                     ui.label(h['ip']).classes('font-mono text-slate-300 text-xs')
+                                     ui.label(h.get('name', '')).classes('text-slate-500 text-xs')
+                    else:
+                        ui.label('No hosts found in inventory.').classes('text-amber-500 italic mb-4')
+
+                    with ui.row().classes('items-center gap-4 mb-4'):
+                        btn_mgr = ui.button('Manage Inventory / Create VMs').classes('bg-slate-700 text-xs')
+                        if on_navigate_to_config:
+                            btn_mgr.on_click(on_navigate_to_config)
+                        else:
+                            btn_mgr.disable()
+                            ui.tooltip("Navigation unavailable").classes('text-xs')
+                    
+                    ui.separator().classes('bg-slate-700 mb-4')
+
+                    ui.label("Deployment Scope").classes('text-sm font-bold text-slate-300 mb-2')
                     target_scope = ui.radio(['All Computers', 'Security Server Only', 'Specific Computer'], value='All Computers').classes('text-slate-300').props('inline')
                     
                     # Parse agents for dropdown
-                    agent_options = []
-                    if HOSTS_INI_FILE.exists():
-                        content = HOSTS_INI_FILE.read_text()
-                        for line in content.splitlines():
-                            line = line.strip()
-                            if line and not line.startswith('#') and not line.startswith('['):
-                                parts = line.split()
-                                if parts:
-                                    # Very basic check to exclude manager if possible, or just list all IPs
-                                    # Better: check if it was under [agents]
-                                    pass
-                        
-                        # Re-implementing a quick parser strictly for agents to populate dropdown
-                        # We can reuse logic from dashboard or config if we refactor, but for now inline is safe
-                        current_section = None
-                        for line in content.splitlines():
-                            line = line.strip()
-                            if line.startswith('['):
-                                current_section = line.strip('[]')
-                                continue
-                            
-                            if current_section in ['agents', 'wazuh_agents'] and line and not line.startswith('#'):
-                                parts = line.split()
-                                if parts:
-                                    agent_options.append(parts[0])
-
+                    agent_options = [h['ip'] for h in hosts] if hosts else []
                     agent_select = ui.select(agent_options, label="Select Computer").classes('w-full text-slate-300')
                     agent_select.bind_visibility_from(target_scope, 'value', value='Specific Computer')
 
@@ -209,10 +180,11 @@ def show_deploy():
                     credentials_container.classes(add='hidden')
                     credentials_container.clear()
                     results_container.clear()
-                    
+
                     # If requested, create VMs first using Terraform
                     created_vms = []
-                    if create_vm_checkbox.value and vm_entries:
+                    # Check if widget exists and has value (it might not be rendered if not on specific tab/state, but assuming typical flow)
+                    if 'create_vm_checkbox' in locals() and create_vm_checkbox.value and vm_entries:
                         ui.notify('Generating Terraform configuration for VMs...', type='info')
                         deploy_log_push("[VM] Preparing Terraform configuration...\n")
                         
@@ -259,18 +231,49 @@ def show_deploy():
                             # Parse and display VM IPs
                             tf_output = tf_result.get('output', '')
                             import re
-                            ip_matches = re.findall(r'(\S+)_ip\s*=\s*"([^"]+)"', tf_output)
+                            # Strip ANSI codes first to prevent hosts.ini corruption
+                            ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+                            tf_output_clean = ansi_escape.sub('', tf_output)
+                            
+                            ip_matches = re.findall(r'(\S+)_ip\s*=\s*"([^"]+)"', tf_output_clean)
                             
                             if ip_matches:
                                 deploy_log_push("\n[VM ACCESS DETAILS]\n")
                                 deploy_log_push(f"{'VM Name':<20} {'IP Address':<18} {'User':<12} {'Password'}\n")
                                 deploy_log_push("-" * 65 + "\n")
+                                
+                                # Prepare data for inventory update
+                                vm_passwords = {spec['name']: spec['ssh_password'] for spec in vm_specs}
+                                new_inventory_hosts = []
+
+                                proxy_cmd = ""
+                                if manager_ssh_key:
+                                     proxy_cmd = f'-o ProxyCommand="ssh -W %h:%p -i {manager_ssh_key} -o StrictHostKeyChecking=no {manager_ssh_user}@{manager_ip}"'
+                                elif manager_ssh_password:
+                                     # Explicitly use sshpass in the proxy command for the jump host
+                                     escaped_pwd = manager_ssh_password.replace('"', '\\"')
+                                     proxy_cmd = f'-o ProxyCommand="sshpass -p \'{escaped_pwd}\' ssh -W %h:%p -o StrictHostKeyChecking=no {manager_ssh_user}@{manager_ip}"'
+
                                 for vm_key, vm_ip in ip_matches:
                                      # vm_key is like "vm-1_ip"
                                      clean_name = vm_key.replace('_ip', '')
                                      # Derived user logic (replicated from core.py to report correctly)
                                      user_name = re.sub(r'[^a-z0-9-]', '', clean_name.lower()) or 'ubuntu'
+                                     pwd = vm_passwords.get(clean_name, 'ubuntu')
+                                     
                                      deploy_log_push(f"{clean_name:<20} {vm_ip:<18} {user_name:<12} ubuntu\n")
+                                     
+                                     new_inventory_hosts.append({
+                                        'ip': vm_ip,
+                                        'user': user_name,
+                                        'password': pwd,
+                                        'key': manager_ssh_key, # Use manager key for now if injected
+                                        'ansible_ssh_common_args': proxy_cmd,
+                                        'type': 'vm',
+                                        'hypervisor': manager_ip,
+                                        'vm_name': clean_name
+                                     })
+
                                 deploy_log_push("-" * 65 + "\n")
                                 deploy_log_push("SSH Command (copy-paste):\n")
                                 # Show the exact command that worked for the user now
@@ -279,6 +282,21 @@ def show_deploy():
                                 example_ip = ip_matches[0][1]
                                 cmd_str = f'ssh -o ProxyCommand="ssh -W %h:%p -i {manager_ssh_key or "~/.ssh/id_rsa"} {manager_ssh_user}@{manager_ip}" {example_user}@{example_ip}'
                                 deploy_log_push(f"{cmd_str}\n\n")
+
+                                # Update inventory automatically
+                                if new_inventory_hosts:
+                                    ui.notify('Updating inventory with new VM IPs...', type='info')
+                                    deploy_log_push("[INVENTORY] Updating hosts.ini with new VM details...\n")
+                                    
+                                    await asyncio.to_thread(
+                                        update_ini_inventory,
+                                        manager_ip,
+                                        manager_ssh_user,
+                                        manager_ssh_password,
+                                        manager_ssh_key,
+                                        new_inventory_hosts
+                                    )
+                                    deploy_log_push("[INVENTORY] Updated.\n")
 
                                 created_vms = gen_result.get('vms', [])
                                 ui.notify('VMs created successfully!', type='positive')
@@ -346,51 +364,8 @@ def show_deploy():
                     deploy_log = ui.log().classes('w-full h-64 bg-slate-900 font-mono text-xs p-4 rounded-xl border border-white/10 mt-4')
 
                     results_container = ui.column().classes('w-full mt-4')
+                    
 
-
-            async def create_vm_handler():
-                # Simple handler that calls the core.create_vm stub and reports results
-                # Backwards-compatible single-create (if legacy controls exist)
-                try:
-                    name = vm_name.value or f"vm-{os.getpid()}"
-                    image = vm_image.value
-                    size = vm_size.value
-                except Exception:
-                    ui.notify("No VM fields available for single-create", type='warning')
-                    return
-
-                deploy_log_push(f"[VM] Creating VM: name={name}, image={image}, size={size}\n")
-                result = await asyncio.to_thread(create_vm, name, image, size)
-
-                if result.get('success'):
-                    ui.notify(f"VM '{result.get('name')}' created ({result.get('ip')})", type='positive')
-                    deploy_log_push(f"[VM] Success: {result.get('message')} ip={result.get('ip')}\n")
-                    with results_container:
-                        ui.label(f"VM Created: {result.get('name')} ({result.get('ip')})").classes('text-slate-300')
-                else:
-                    ui.notify(f"VM creation failed: {result.get('message')}", type='negative')
-                    deploy_log_push(f"[VM] Error: {result.get('message')}\n")
-
-            async def create_vm_handler_multiple():
-                # Create all VMs defined in vm_entries
-                if not vm_entries:
-                    ui.notify('No VM entries defined', type='warning')
-                    return
-
-                for idx, entry in enumerate(vm_entries, start=1):
-                    name = entry['name'].value or f"vm-{idx}-{os.getpid()}"
-                    image = entry['type'].value
-                    # we don't use size here; default to 'small'
-                    deploy_log_push(f"[VM#{idx}] Creating: name={name}, image={image}\n")
-                    result = await asyncio.to_thread(create_vm, name, image, 'small')
-                    if result.get('success'):
-                        ui.notify(f"VM '{result.get('name')}' created ({result.get('ip')})", type='positive')
-                        deploy_log_push(f"[VM#{idx}] Success: {result.get('message')} ip={result.get('ip')}\n")
-                        with results_container:
-                            ui.label(f"VM Created: {result.get('name')} ({result.get('ip')})").classes('text-slate-300')
-                    else:
-                        ui.notify(f"VM #{idx} creation failed: {result.get('message')}", type='negative')
-                        deploy_log_push(f"[VM#{idx}] Error: {result.get('message')}\n")
             def check_credentials(output):
                 # Attempt to retrieve credentials
                 pass_file = ANSIBLE_DIR / 'inventory' / 'wazuh-admin-password.txt'

@@ -1,5 +1,5 @@
 from nicegui import ui
-from reef.manager.core import GROUP_VARS_FILE, HOSTS_INI_FILE, load_current_config
+from reef.manager.core import GROUP_VARS_FILE, HOSTS_INI_FILE, load_current_config, get_manager_credentials_from_inventory
 from reef.manager.ui_utils import page_header, card_style, status_badge
 from reef.manager.pdf_report import fetch_wazuh_alert_summary, generate_report_pdf
 import datetime
@@ -101,22 +101,51 @@ def show_dashboard():
 
     async def check_ping(ip, status_icon):
         try:
+            # Check if this is a nested VM (192.168.122.x)
+            # If so, we must ping it FROM the manager via SSH, as we can't reach it directly.
+            is_vm = ip.startswith("192.168.122.")
+            
+            cmd = ['ping', '-c', '1', '-W', '1000', ip]
+            
+            if is_vm:
+                 # Retrieve up-to-date manager credentials from hosts.ini
+                 mgr_ip, mgr_user, mgr_pass, mgr_key = await asyncio.to_thread(get_manager_credentials_from_inventory)
+                 
+                 import os
+                 expanded_key = os.path.expanduser(mgr_key) if mgr_key else ""
+                 
+                 if mgr_ip and expanded_key and os.path.exists(expanded_key):
+                     # Construct SSH command to run ping on manager
+                     # ssh -i key ubuntu@mgr ping -c 1 -W 1 ip
+                     # Use the user from inventory (mgr_user)
+                     mgr_user = mgr_user or 'ubuntu'
+                     cmd = [
+                         'ssh', 
+                         '-o', 'StrictHostKeyChecking=no', 
+                         '-o', 'UserKnownHostsFile=/dev/null',
+                         '-o', 'ConnectTimeout=2',
+                         '-i', expanded_key,
+                         f'{mgr_user}@{mgr_ip}',
+                         f'ping -c 1 -W 1 {ip}'
+                     ]
+
             proc = await asyncio.create_subprocess_exec(
-                'ping', '-c', '1', '-W', '1000', ip,
+                *cmd,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL
             )
             await proc.wait()
              
             if proc.returncode == 0:
-                status_icon.classes(remove='text-slate-500', add='text-emerald-500')
-                status_icon.props('icon=check_circle')
+                status_icon.classes(remove='text-slate-500 text-rose-500', add='text-emerald-500')
+                status_icon.props(remove='icon=cancel', add='icon=check_circle')
             else:
-                 status_icon.classes(remove='text-slate-500', add='text-rose-500')
-                 status_icon.props('icon=cancel')
-        except Exception:
-             status_icon.classes(remove='text-slate-500', add='text-rose-500')
-             status_icon.props('icon=cancel')
+                 status_icon.classes(remove='text-slate-500 text-emerald-500', add='text-rose-500')
+                 status_icon.props(remove='icon=check_circle', add='icon=cancel')
+        except Exception as e:
+             # print(e)
+             status_icon.classes(remove='text-slate-500 text-emerald-500', add='text-rose-500')
+             status_icon.props(remove='icon=check_circle', add='icon=cancel')
 
     wazuh_refs = {}
     ping_checks = []
@@ -253,8 +282,70 @@ def show_dashboard():
             ui.label('Security Reports').classes('text-slate-400 font-bold mb-4 border-b border-white/10 pb-2 w-full')
             ui.label('Generate a comprehensive PDF audit based on Wazuh data.').classes('text-slate-400 text-sm mb-4')
             
-            with ui.row().classes('items-center gap-4'):
-                ui.button('Download Audit Report (PDF)', on_click=download_report).props('icon=picture_as_pdf').classes('w-full bg-indigo-600 text-white hover:bg-indigo-700 transition-colors')
+            ui.button('Download Audit Report (PDF)', on_click=download_report).props('icon=picture_as_pdf').classes('w-full bg-indigo-600 text-white hover:bg-indigo-700 transition-colors')
+
+        # Instance Status Card
+        from reef.manager.core import get_inventory_hosts
+        all_hosts = get_inventory_hosts()
+        
+        # Instance Status Cards
+        from reef.manager.core import get_inventory_hosts
+        all_hosts = get_inventory_hosts()
+        
+        vms = [h for h in all_hosts if h.get('type') == 'vm']
+        physical_hosts = [h for h in all_hosts if h.get('type') != 'vm']
+
+        # -- Virtual Machines Card --
+        if vms:
+            with ui.column().classes(card_style()):
+                ui.label('Virtual Machines').classes('text-slate-400 font-bold mb-4 border-b border-white/10 pb-2 w-full')
+                
+                with ui.grid(columns=4).classes('w-full gap-2 items-center'):
+                    ui.label('Name').classes('text-slate-500 font-bold text-xs')
+                    ui.label('IP Address').classes('text-slate-500 font-bold text-xs')
+                    ui.label('Hypervisor').classes('text-slate-500 font-bold text-xs')
+                    ui.label('State').classes('text-slate-500 font-bold text-xs')
+                    
+                    for vm in vms:
+                        # Name
+                        vm_name = vm.get('vm_name', 'Unknown')
+                        ui.label(vm_name).classes('text-slate-300 text-sm font-bold')
+                        
+                        # IP
+                        ui.label(vm['ip']).classes('font-mono text-slate-400 text-sm')
+                        
+                        # Hypervisor
+                        ui.label(vm.get('hypervisor', 'Unknown')).classes('font-mono text-slate-500 text-sm')
+                        
+                        # Status Icon
+                        status_icon = ui.icon('circle', size='xs').classes('text-slate-500')
+                        ping_checks.append((vm['ip'], status_icon))
+                        ui.timer(0.1, lambda i=vm['ip'], s=status_icon: check_ping(i, s), once=True)
+
+        # -- Physical Hosts Card --
+        with ui.column().classes(card_style()):
+            ui.label('Physical Nodes').classes('text-slate-400 font-bold mb-4 border-b border-white/10 pb-2 w-full')
+            
+            if physical_hosts:
+                with ui.grid(columns=3).classes('w-full gap-2 items-center'):
+                    ui.label('IP Address').classes('text-slate-500 font-bold text-xs')
+                    ui.label('User').classes('text-slate-500 font-bold text-xs')
+                    ui.label('State').classes('text-slate-500 font-bold text-xs')
+                    
+                    for host in physical_hosts:
+                        ui.label(host['ip']).classes('font-mono text-slate-300 text-sm')
+                        ui.label(host['user']).classes('font-mono text-slate-400 text-sm')
+                        
+                        # Status Icon
+                        status_icon = ui.icon('circle', size='xs').classes('text-slate-500')
+                        
+                        # Add to the global ping list so the Refresh button works
+                        ping_checks.append((host['ip'], status_icon))
+                        
+                        # Trigger immediate check (async)
+                        ui.timer(0.1, lambda i=host['ip'], s=status_icon: check_ping(i, s), once=True)
+            else:
+                ui.label('No physical instances found in inventory.').classes('text-slate-500 italic')
 
     # Trigger check
     ui.timer(0.1, lambda: check_wazuh(status_label, spinner), once=True)

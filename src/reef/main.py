@@ -23,7 +23,7 @@ def main_page():
     # Global Style
     ui.add_head_html("""
     <style>
-        body { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); }
+        body { background-color: #0f172a; }
     </style>
     """)
     ui.colors(primary='#4f46e5', secondary='#06b6d4', accent='#111827', dark='#111827')
@@ -40,9 +40,9 @@ def main_page():
         # Navigation
         nav_items = [
             ('Dashboard', 'dashboard', show_dashboard),
-            ('Configuration', 'settings', show_configuration),
-            ('Prerequisites', 'check_circle', show_prerequisites),
-            ('Deploy & Manage', 'rocket_launch', show_deploy),
+            ('System Configuration', 'settings', show_configuration),
+            # ('Prerequisites', 'check_circle', show_prerequisites),
+            ('Deploy & Manage Tools', 'rocket_launch', lambda: show_deploy(on_navigate_to_config=lambda: navigate('System Configuration', show_configuration))),
             ('Documentation', 'menu_book', show_documentation),
         ]
 

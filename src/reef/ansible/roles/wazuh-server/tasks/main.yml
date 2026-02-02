@@ -15,10 +15,25 @@
   when: not wazuh_install_dir.stat.exists or not wazuh_config_tar.stat.exists
 
 - name: Install Wazuh Server
-  command: ./wazuh-install.sh --wazuh-server {{ wazuh_server_node_name | default('wazuh-1') }} --overwrite
-  args:
-    chdir: /opt/wazuh-install
-    creates: /var/ossec/bin/wazuh-analysisd
+  block:
+    - name: Run Wazuh install script
+      command: ./wazuh-install.sh --wazuh-server {{ wazuh_server_node_name | default('wazuh-1') }} --overwrite
+      args:
+        chdir: /opt/wazuh-install
+        creates: /var/ossec/bin/wazuh-analysisd
+  rescue:
+    - name: Read Wazuh install log
+      command: cat /var/log/wazuh-install.log
+      register: wazuh_install_log
+      changed_when: false
+
+    - name: Print Wazuh install log
+      debug:
+        var: wazuh_install_log.stdout_lines
+
+    - name: Fail after printing log
+      fail:
+        msg: "Wazuh installation failed. See full log above for details."
 
 #demo only
 - name: Deploy custom demo rules
